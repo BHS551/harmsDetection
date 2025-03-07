@@ -1,0 +1,8 @@
+torch
+torchvision
+ftfy
+regex
+tqdm
+opencv-python-headless
+CLIP
+Pillow
