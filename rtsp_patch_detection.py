@@ -29,7 +29,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 model, preprocess = clip.load("ViT-B/32", device=device)
 
 # Precompute the text embedding for the query "knife"
-text_prompt = "knife"
+text_prompt = "person_holding_knife"
 text_tokens = clip.tokenize([text_prompt]).to(device)
 with torch.no_grad():
     text_embedding = model.encode_text(text_tokens)
@@ -61,7 +61,6 @@ def sliding_window_detection(image, patch_size=224, stride=112, threshold=0.260)
         patch_embeddings /= patch_embeddings.norm(dim=-1, keepdim=True)
     
     # Compute cosine similarities between each patch and the text embedding
-    # The result is a tensor of shape [num_patches]
     cosine_sim = (patch_embeddings @ text_embedding.T).squeeze()
     
     # Get maximum similarity and determine if any patch exceeds the threshold
@@ -78,14 +77,14 @@ if not cap.isOpened():
 print("Processing frames from RTSP stream...")
 
 consecutive_detection_count = 0  # Counter for consecutive detections
-alert_threshold = 2              # Number of consecutive detections required to send an alert
+alert_threshold = 1              # Number of consecutive detections required to send an alert
 
 try:
     while True:
         # Flush the stream for 1 second to get the latest frame
         flush_start = time.time()
         latest_frame = None
-        while time.time() - flush_start < 1:
+        while time.time() - flush_start < 0.1:
             ret, frame = cap.read()
             if ret:
                 latest_frame = frame
@@ -94,11 +93,23 @@ try:
             print("Failed to capture a fresh frame")
             continue
 
-        # Convert frame (BGR) to PIL Image (RGB)
-        image = Image.fromarray(cv2.cvtColor(latest_frame, cv2.COLOR_BGR2RGB))
+        # --- Apply contrast enhancement using CLAHE ---
+        # Convert the frame to LAB color space
+        lab = cv2.cvtColor(latest_frame, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        # Create CLAHE object (you can adjust clipLimit and tileGridSize as needed)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l_enhanced = clahe.apply(l)
+        # Merge channels and convert back to BGR
+        lab_enhanced = cv2.merge((l_enhanced, a, b))
+        enhanced_frame = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
+        # -------------------------------------------------
+
+        # Convert the enhanced frame (BGR) to a PIL Image (RGB) for detection
+        image = Image.fromarray(cv2.cvtColor(enhanced_frame, cv2.COLOR_BGR2RGB))
         
-        # Run sliding window detection on the image
-        cosine_sim, knife_detected = sliding_window_detection(image, patch_size=224, stride=112, threshold=0.260)
+        # Run sliding window detection on the enhanced image
+        cosine_sim, knife_detected = sliding_window_detection(image, patch_size=224, stride=112, threshold=0.290)
         print(f"Max cosine similarity: {cosine_sim:.3f} | {text_prompt} detected: {knife_detected}")
 
         # Count consecutive detections
@@ -113,13 +124,13 @@ try:
             send_sms_alert(f"Alert: '{text_prompt}' detected consecutively {alert_threshold} times!")
             consecutive_detection_count = 0  # Reset after alert
         
-        # Display the most recent frame
-        cv2.imshow('RTSP Stream', latest_frame)
+        # Display the enhanced frame (with the applied contrast mask)
+        cv2.imshow('RTSP Stream', enhanced_frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
         
         # Wait a short time before processing the next frame
-        time.sleep(1)
+        time.sleep(0.1)
 
 finally:
     cap.release()
