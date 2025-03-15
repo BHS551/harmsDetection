@@ -1,20 +1,26 @@
-# Use an official Python runtime as the base image.
-FROM python:3.8-slim
+# Use the official NVIDIA CUDA 12.1 runtime image with cuDNN 8 on Ubuntu 20.04
+FROM nvidia/cuda:11.6.1-cudnn8-runtime-ubuntu20.04
 
-# Install system dependencies (if needed for OpenCV and other libraries)
+# Set non-interactive mode for apt-get
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies (including git)
 RUN apt-get update && apt-get install -y \
-    libglib2.0-0 libsm6 libxext6 libxrender-dev \
+    python3 \
+    python3-pip \
+    ffmpeg \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Set the working directory in the container.
+# Set the working directory
 WORKDIR /app
 
-# Copy the requirements file and install Python dependencies.
+# Copy and install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip3 install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code.
-COPY . .
+# Copy your application code
+COPY multicore_detection_debug.py .
 
-# Run the detection script.
-CMD ["python", "rtsp_detection.py"]
+# Command to run your script
+CMD ["python3", "multicore_detection_debug.py"]

@@ -1,8 +1,7 @@
-torch
-torchvision
-ftfy
-regex
-tqdm
-opencv-python-headless
-CLIP
-Pillow
+opencv-python>=4.5.3
+Pillow>=8.0.0
+torch>=1.7.0
+git+https://github.com/openai/CLIP.git
+twilio>=6.0.0
+numpy>=1.19.5
+matplotlib>=3.4.0
