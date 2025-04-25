@@ -6,9 +6,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies (including git)
 RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
+    python python3-pip \
     ffmpeg \
+    libavcodec-extra \
     git \
     && rm -rf /var/lib/apt/lists/*
 
@@ -17,10 +17,10 @@ WORKDIR /app
 
 # Copy and install Python dependencies
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
+RUN python3 -m pip install --no-cache-dir -r requirements.txt
 
 # Copy your application code
 COPY multicore_detection_debug.py .
 
 # Command to run your script
-CMD ["python3", "multicore_detection_debug.py"]
+CMD ["python", "multicore_detection_debug.py"]
