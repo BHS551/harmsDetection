@@ -9,7 +9,7 @@ from twilio.rest import Client
 #          TWILIO CONFIG
 # ================================
 # Replace the credentials below with your own
-account_sid = "ACCOUNT_SID"
+account_sid = null
 auth_token = "c7ea6fdcd8bd75d3b9ab6ec2df33e1f5"
 twilio_phone = "+14793178516"
 recipient_phone = "+573043566310"
