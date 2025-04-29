@@ -9,7 +9,7 @@ import concurrent.futures
 import multiprocessing
 
 # === Twilio configuration ===
-account_sid = "AC56e980334782eb62fabb2dced530ad84"  # Replace with your Account SID
+account_sid = "ACCOUNT_SID"  # Replace with your Account SID
 auth_token = "c7ea6fdcd8bd75d3b9ab6ec2df33e1f5"       # Replace with your Auth Token
 twilio_phone = "+14793178516"                         # Your Twilio phone number
 recipient_phone = "+573043566310"                     # The number to alert
