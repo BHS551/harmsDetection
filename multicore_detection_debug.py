@@ -26,7 +26,7 @@ def send_sms_alert(message_body):
     print("SMS sent:", message.sid)
 
 # === Camera and Detection Configuration ===
-rtsp_url = "rtsp://bhsentrance:mainSecurePass1@6.tcp.ngrok.io:12534/stream1"
+rtsp_url = "rtsp://bhsentrance:mainSecurePass1@8.tcp.ngrok.io:15666/stream1"
 
 # Set device and load the CLIP model
 device = "cuda" if torch.cuda.is_available() else "cpu"
