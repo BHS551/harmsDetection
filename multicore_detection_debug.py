@@ -12,9 +12,9 @@ import subprocess
 
 # === Twilio configuration ===
 account_sid     = ""  # Replace with your Account SID
-auth_token      = "testing"
-twilio_phone    = "+14793178516"
-recipient_phone = "+573043566310"
+auth_token      = "redacted"
+twilio_phone    = "redacted"
+recipient_phone = "redacted"
 client = Client(account_sid, auth_token)
 
 def send_sms_alert(message_body):
