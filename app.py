@@ -7,11 +7,13 @@ from twilio.rest import Client
 import numpy as np
 import concurrent.futures
 import multiprocessing
+import http.client
+import json
 
 # === Twilio configuration ===
 account_sid = ""  # Replace with your Account SID
 auth_token = ""       # Replace with your Auth Token
-twilio_phone = "+14793178516"                         # Your Twilio phone number
+twilio_phone = "+18164767447"                         # Your Twilio phone number
 recipient_phone = "+573043566310"                     # The number to alert
 
 client = Client(account_sid, auth_token)
@@ -25,8 +27,11 @@ def send_sms_alert(message_body):
     print("SMS sent:", message.sid)
 
 # === Camera and Detection Configuration ===
-rtsp_url = "rtsp://test123:1234566789@4.tcp.ngrok.io:17900/stream1"
+# url for entrance camera 
+#rtsp_url = "rtsp://test123:123456789@6.tcp.ngrok.io:15739/stream1"
 
+# url for studio camera
+rtsp_url = "rtsp://admin551:123456789@2.tcp.ngrok.io:15165/stream1"
 
 # Set device and load the CLIP model with its preprocessing function.
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -97,6 +102,17 @@ def reinitialize_capture():
     cap.release()
     time.sleep(2)  # wait a bit before reconnecting
     cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+
+def storeRegister(data):
+    conn = http.client.HTTPSConnection("c038gkbfm8.execute-api.us-east-1.amazonaws.com")
+    payload = json.dumps(data)
+    headers = {
+        'Content-Type': 'application/json'
+    }
+    conn.request("POST", "/default/storeRegister", payload, headers)
+    res = conn.getresponse()
+    response_data = res.read()
+    print(response_data.decode("utf-8"))
 
 # Open the RTSP stream using the FFMPEG backend.
 cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
@@ -176,8 +192,14 @@ try:
                     consecutive_detection_count += 1
                     print("Consecutive detections:", consecutive_detection_count)
                     # Optionally, send an SMS alert:
-                    # if consecutive_detection_count >= alert_threshold:
-                    #     send_sms_alert(f"Alert: {text_prompt} detected at {format_full_time(ts)}")
+                    if consecutive_detection_count >= alert_threshold:
+                        send_sms_alert(f"Alert: {text_prompt} detected at {format_full_time(ts)}")
+                        storeRegister({
+                            "cammera": "entrance",
+                            "clientId": 1,
+                            "event_type": "manual_test"
+                        })
+                        
                 else:
                     consecutive_detection_count = 0
 

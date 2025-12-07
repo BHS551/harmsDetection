@@ -1,9 +1,9 @@
-opencv-python>=4.5.3
-Pillow>=8.0.0
-torch>=1.7.0
+torch==2.3.1
+torchvision==0.18.1
+opencv-python-headless
+pillow
+ftfy
+regex
+tqdm
+twilio
 git+https://github.com/openai/CLIP.git
-twilio>=6.0.0
-numpy>=1.19.5
-matplotlib>=3.4.0
-pynvml>=12.0.0
-nvidia-ml-py3>=7.352.0

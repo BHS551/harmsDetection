@@ -12,7 +12,7 @@ import subprocess
 
 # === Twilio configuration ===
 account_sid     = ""  # Replace with your Account SID
-auth_token      = "c7ea6fdcd8bd75d3b9ab6ec2df33e1f5"
+auth_token      = ""
 twilio_phone    = "+14793178516"
 recipient_phone = "+573043566310"
 client = Client(account_sid, auth_token)
