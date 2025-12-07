@@ -250,7 +250,8 @@ try:
                             "cammera": "entrance",
                             "clientId": 1,
                             "event_type": "manual_test",
-                            "detection_id": detection_id
+                            "detection_id": detection_id,
+                            "cosine_sim": cosine_sim,
                         })
                         upload_frame_to_s3(
                             processed_frame,   # full enhanced frame
