@@ -11,6 +11,7 @@ import http.client
 import json
 import boto3
 import http.client
+import uuid
 
 # === Twilio configuration ===
 account_sid = ""  # Replace with your Account SID
@@ -40,10 +41,10 @@ def send_sms_alert(message_body):
 
 # === Camera and Detection Configuration ===
 # url for entrance camera 
-#rtsp_url = "rtsp://test123:123456789@6.tcp.ngrok.io:15739/stream1"
+rtsp_url = "rtsp://test123:123456789@4.tcp.ngrok.io:18172/stream1"
 
 # url for studio camera
-rtsp_url = "rtsp://admin551:123456789@2.tcp.ngrok.io:15165/stream1"
+#rtsp_url = "rtsp://admin551:123456789@2.tcp.ngrok.io:15165/stream1"
 
 # Set device and load the CLIP model with its preprocessing function.
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -126,7 +127,7 @@ def storeRegister(data):
     response_data = res.read()
     print(response_data.decode("utf-8"))
 
-def upload_frame_to_s3(frame, ts, detection_score, coords=None):
+def upload_frame_to_s3(frame, ts, detection_score, coords=None, detection_id=None):
     """
     Uploads a single frame (numpy array, BGR) to S3 as a JPEG.
     ts: timestamp (float)
@@ -143,7 +144,8 @@ def upload_frame_to_s3(frame, ts, detection_score, coords=None):
     else:
         coord_str = ""
 
-    filename = f"{timestr}_{millis:03d}_score-{detection_score:.3f}{coord_str}.jpg"
+    uuid_str = f"_{detection_id}" if detection_id else ""
+    filename = f"{timestr}_{millis:03d}_score-{detection_score:.3f}{coord_str}{uuid_str}.jpg"
     key = S3_PREFIX + filename
 
     # OpenCV frame is BGR, encode as JPEG
@@ -242,17 +244,20 @@ try:
                     print("Consecutive detections:", consecutive_detection_count)
                     # Optionally, send an SMS alert:
                     if consecutive_detection_count >= alert_threshold:
+                        detection_id = str(uuid.uuid4())
                         # send_sms_alert(f"Alert: {text_prompt} detected at {format_full_time(ts)}")
                         storeRegister({
                             "cammera": "entrance",
                             "clientId": 1,
-                            "event_type": "manual_test"
+                            "event_type": "manual_test",
+                            "detection_id": detection_id
                         })
                         upload_frame_to_s3(
                             processed_frame,   # full enhanced frame
                             ts,                # timestamp
                             cosine_sim,        # detection score
-                            best_coords        # coordinates of best patch (optional)
+                            best_coords,        # coordinates of best patch (optional)
+                            detection_id
                         )
                 else:
                     consecutive_detection_count = 0
