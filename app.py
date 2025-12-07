@@ -9,6 +9,8 @@ import concurrent.futures
 import multiprocessing
 import http.client
 import json
+import boto3
+import http.client
 
 # === Twilio configuration ===
 account_sid = ""  # Replace with your Account SID
@@ -16,7 +18,17 @@ auth_token = ""       # Replace with your Auth Token
 twilio_phone = "+18164767447"                         # Your Twilio phone number
 recipient_phone = "+573043566310"                     # The number to alert
 
+# === S3 Configuration ===
+S3_BUCKET_NAME = "detection-frames-tests"
+S3_PREFIX = "cameras/"
 client = Client(account_sid, auth_token)
+
+s3_client = boto3.client(
+    "s3",
+    aws_access_key_id="",
+    aws_secret_access_key="",
+    region_name="us-east-1",
+)
 
 def send_sms_alert(message_body):
     message = client.messages.create(
@@ -114,6 +126,43 @@ def storeRegister(data):
     response_data = res.read()
     print(response_data.decode("utf-8"))
 
+def upload_frame_to_s3(frame, ts, detection_score, coords=None):
+    """
+    Uploads a single frame (numpy array, BGR) to S3 as a JPEG.
+    ts: timestamp (float)
+    detection_score: cosine similarity score for logging
+    coords: (left, top, right, bottom) for the best patch (optional, used to name file)
+    """
+    # Build a nice filename: 2025-12-07_13-45-23_123ms_score-0.812.jpg
+    timestr = time.strftime('%Y-%m-%d_%H-%M-%S', time.localtime(ts))
+    millis = int((ts % 1) * 1000)
+    
+    if coords is not None:
+        left, top, right, bottom = coords
+        coord_str = f"_{left}-{top}-{right}-{bottom}"
+    else:
+        coord_str = ""
+
+    filename = f"{timestr}_{millis:03d}_score-{detection_score:.3f}{coord_str}.jpg"
+    key = S3_PREFIX + filename
+
+    # OpenCV frame is BGR, encode as JPEG
+    success, buffer = cv2.imencode(".jpg", frame)
+    if not success:
+        print("Failed to encode frame as JPEG, not uploading to S3")
+        return
+
+    try:
+        s3_client.put_object(
+            Bucket=S3_BUCKET_NAME,
+            Key=key,
+            Body=buffer.tobytes(),
+            ContentType="image/jpeg",
+        )
+        print(f"Uploaded frame to s3://{S3_BUCKET_NAME}/{key}")
+    except Exception as e:
+        print("Error uploading frame to S3:", e)
+
 # Open the RTSP stream using the FFMPEG backend.
 cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
 if not cap.isOpened():
@@ -193,13 +242,18 @@ try:
                     print("Consecutive detections:", consecutive_detection_count)
                     # Optionally, send an SMS alert:
                     if consecutive_detection_count >= alert_threshold:
-                        send_sms_alert(f"Alert: {text_prompt} detected at {format_full_time(ts)}")
+                        # send_sms_alert(f"Alert: {text_prompt} detected at {format_full_time(ts)}")
                         storeRegister({
                             "cammera": "entrance",
                             "clientId": 1,
                             "event_type": "manual_test"
                         })
-                        
+                        upload_frame_to_s3(
+                            processed_frame,   # full enhanced frame
+                            ts,                # timestamp
+                            cosine_sim,        # detection score
+                            best_coords        # coordinates of best patch (optional)
+                        )
                 else:
                     consecutive_detection_count = 0
 
