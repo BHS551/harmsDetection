@@ -48,6 +48,7 @@ def send_sms_alert(message_body):
 
 # === Camera and Detection Configuration ===
 rtsp_url = data['rtsp_path']
+owner_uid = data.get('owner_uid', '')
 
 # Set device and load the CLIP model with its preprocessing function.
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -237,6 +238,7 @@ try:
                             "detection_id": detection_id,
                             "cosine_sim": cosine_sim,
                             "image_key": image_key,
+                            "owner_uid": owner_uid,
                         })
                 else:
                     consecutive_detection_count = 0
