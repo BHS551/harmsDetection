@@ -135,7 +135,7 @@ def upload_frame_to_s3(frame, ts, detection_score, coords=None, detection_id=Non
     success, buffer = cv2.imencode(".jpg", frame)
     if not success:
         print("Failed to encode frame as JPEG, not uploading to S3")
-        return
+        return None
     try:
         s3_client.put_object(
             Bucket=S3_BUCKET_NAME,
@@ -144,8 +144,10 @@ def upload_frame_to_s3(frame, ts, detection_score, coords=None, detection_id=Non
             ContentType="image/jpeg",
         )
         print(f"Uploaded frame to s3://{S3_BUCKET_NAME}/{key}")
+        return key
     except Exception as e:
         print("Error uploading frame to S3:", e)
+        return None
 
 # Open the RTSP stream
 cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
@@ -221,20 +223,21 @@ try:
                     print("Consecutive detections:", consecutive_detection_count)
                     if consecutive_detection_count >= alert_threshold:
                         detection_id = str(uuid.uuid4())
-                        storeRegister({
-                            "cammera": "entrance",
-                            "clientId": 1,
-                            "event_type": "manual_test",
-                            "detection_id": detection_id,
-                            "cosine_sim": cosine_sim,
-                        })
-                        upload_frame_to_s3(
+                        image_key = upload_frame_to_s3(
                             processed_frame,
                             ts,
                             cosine_sim,
                             best_coords,
                             detection_id
                         )
+                        storeRegister({
+                            "cammera": "entrance",
+                            "clientId": 1,
+                            "event_type": "manual_test",
+                            "detection_id": detection_id,
+                            "cosine_sim": cosine_sim,
+                            "image_key": image_key,
+                        })
                 else:
                     consecutive_detection_count = 0
 
