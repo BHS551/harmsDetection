@@ -95,7 +95,7 @@ def process_frame(frame):
     enhanced_frame = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
     image = Image.fromarray(cv2.cvtColor(enhanced_frame, cv2.COLOR_BGR2RGB))
     cosine_sim, knife_detected, best_patch, best_coords = sliding_window_detection(
-        image, patch_size=224, stride=112, threshold=0.26)
+        image, patch_size=224, stride=112, threshold=0.266)
     return enhanced_frame, cosine_sim, knife_detected, best_patch, best_coords
 
 def format_full_time(ts):
