@@ -55,7 +55,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 model, preprocess = clip.load("ViT-B/32", device=device)
 
 # Precompute the text embedding for the query "knife"
-text_prompt = "knife"
+text_prompt = "Person"
 text_tokens = clip.tokenize([text_prompt]).to(device)
 with torch.no_grad():
     text_embedding = model.encode_text(text_tokens)
@@ -232,8 +232,8 @@ try:
                             detection_id
                         )
                         storeRegister({
-                            "cammera": "entrance",
-                            "clientId": 1,
+                            "cammera": data.get('camera_name', 'entrance'),
+                            "clientId": data.get('client_id', 1),
                             "event_type": "manual_test",
                             "detection_id": detection_id,
                             "cosine_sim": cosine_sim,
