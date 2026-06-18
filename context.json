@@ -1,0 +1,7 @@
+{
+    "instance_id": 1,
+    "client_id": 1,
+    "camera_name": "entrance",
+    "detection_blacklist": ["knife"],
+    "rtsp_path": "rtsp://admin551:123456789@4.tcp.ngrok.io:17829/stream1"
+}
