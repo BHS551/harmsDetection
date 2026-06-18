@@ -41,7 +41,7 @@ s3_client = boto3.client(
 
 # === Runtime tuning (override via env vars without touching code) ===
 # Live debug windows: OFF by default so headless/EC2 hosts don't crash on cv2.imshow.
-SHOW_WINDOWS = 1
+SHOW_WINDOWS = 0
 # Max detections-per-second we actually run CLIP on (time-based, FPS-independent).
 MIN_DETECTION_INTERVAL = float(os.environ.get("HEIMDALL_MIN_INTERVAL", "0.4"))
 # Consecutive positive frames required before firing an alert (debounces false positives).
