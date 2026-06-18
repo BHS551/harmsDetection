@@ -1,6 +1,7 @@
 import cv2
 import time
 import os
+import re
 import sys
 from PIL import Image
 import torch
@@ -45,6 +46,28 @@ def send_sms_alert(message_body):
         to=recipient_phone
     )
     print("SMS sent:", message.sid)
+
+def mask_rtsp_url(url):
+    return re.sub(r":([^:@/]+)@", ":****@", url)
+
+def open_rtsp_capture(url, retries=5, delay_sec=3):
+    """Open RTSP with TCP transport; ngrok tunnels often fail on UDP."""
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|stimeout;5000000"
+    for attempt in range(1, retries + 1):
+        print(f"Opening RTSP stream (attempt {attempt}/{retries}): {mask_rtsp_url(url)}")
+        cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+        if cap.isOpened():
+            ret, _ = cap.read()
+            if ret:
+                print("RTSP stream opened successfully")
+                return cap
+            cap.release()
+            print("Stream opened but first frame read failed")
+        else:
+            print("VideoCapture.isOpened() returned False")
+        if attempt < retries:
+            time.sleep(delay_sec)
+    return None
 
 # === Camera and Detection Configuration ===
 rtsp_url = data['rtsp_path']
@@ -106,7 +129,9 @@ def reinitialize_capture():
     print("Reinitializing stream...")
     cap.release()
     time.sleep(2)
-    cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+    cap = open_rtsp_capture(rtsp_url, retries=3, delay_sec=2)
+    if cap is None:
+        raise Exception(f"Failed to reconnect RTSP stream: {mask_rtsp_url(rtsp_url)}")
 
 def storeRegister(data):
     token = get_firebase_token()
@@ -151,9 +176,13 @@ def upload_frame_to_s3(frame, ts, detection_score, coords=None, detection_id=Non
         return None
 
 # Open the RTSP stream
-cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
-if not cap.isOpened():
-    raise Exception("Failed to open RTSP stream")
+cap = open_rtsp_capture(rtsp_url)
+if cap is None:
+    raise Exception(
+        f"Failed to open RTSP stream: {mask_rtsp_url(rtsp_url)}. "
+        "Check that the ngrok tunnel is running, the port matches context.json, "
+        "and ffmpeg is installed on the host (apt install ffmpeg)."
+    )
 
 print("Processing frames from RTSP stream...")
 
