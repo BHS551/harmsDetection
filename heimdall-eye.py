@@ -3,6 +3,7 @@ import time
 import os
 import re
 import sys
+import unicodedata
 from collections import deque
 from PIL import Image
 import torch
@@ -127,6 +128,51 @@ owner_uid = data.get('owner_uid', '')
 detection_blacklist = data.get("detection_blacklist") or ["person"]
 print("Detection targets (blacklist):", detection_blacklist)
 
+# The UI sends user-facing detection words (Spanish, configurable per camera).
+# CLIP was trained mostly on English alt-text, so a bare Spanish word embeds
+# poorly; each known word expands to several English prompt variants that all
+# report the user's original word as the event label. Words not in the map
+# (custom words typed in the UI) pass through to CLIP verbatim.
+PROMPT_MAP = {
+    "caidas": [
+        "a person fallen on the floor",
+        "a person falling down",
+        "a person collapsed on the ground",
+    ],
+    "robos": [
+        "a robbery in progress",
+        "a person stealing from someone",
+        "a burglar breaking into a building",
+    ],
+    "violencia": [
+        "people fighting violently",
+        "a person hitting another person",
+        "a violent physical assault",
+    ],
+    "persona": ["a photo of a person"],
+    "person": ["a photo of a person"],
+    "cuchillo": ["a photo of a knife"],
+    "knife": ["a photo of a knife"],
+}
+
+
+def normalize_word(word):
+    """Lowercase and strip accents so 'Caídas' still hits the 'caidas' map key."""
+    word = str(word).strip().lower()
+    return "".join(
+        c for c in unicodedata.normalize("NFD", word)
+        if unicodedata.category(c) != "Mn"
+    )
+
+
+detection_prompts = []
+prompt_labels = []  # aligned with detection_prompts: prompt i reports label prompt_labels[i]
+for word in detection_blacklist:
+    for prompt in PROMPT_MAP.get(normalize_word(word), [str(word)]):
+        detection_prompts.append(prompt)
+        prompt_labels.append(word)
+print("CLIP prompts:", detection_prompts)
+
 # Set device and load the CLIP model with its preprocessing function.
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model, preprocess = clip.load("ViT-B/32", device=device)
@@ -136,8 +182,8 @@ if use_half:
     model = model.half()
 model.eval()
 
-# Precompute one text embedding per blacklisted item. A frame matches if ANY item scores high.
-text_tokens = clip.tokenize(detection_blacklist).to(device)
+# Precompute one text embedding per prompt variant. A frame matches if ANY prompt scores high.
+text_tokens = clip.tokenize(detection_prompts).to(device)
 with torch.no_grad():
     text_embeddings = model.encode_text(text_tokens)
     text_embeddings /= text_embeddings.norm(dim=-1, keepdim=True)
@@ -241,7 +287,8 @@ def run_detection(frame, rois):
     prompt_idx = flat_idx % num_prompts
     best_score = float(sims[patch_idx, prompt_idx].item())
     best_coords = coords_list[patch_idx]
-    best_label = detection_blacklist[prompt_idx]
+    # Report the user's word for the winning prompt, not the internal English prompt.
+    best_label = prompt_labels[prompt_idx]
     detected = best_score > DETECTION_THRESHOLD
     return enhanced, best_score, detected, best_coords, best_label
 
