@@ -165,9 +165,13 @@ def normalize_word(word):
     )
 
 
+# Empty/whitespace-only entries would become empty CLIP prompts that can still
+# fire alerts (with a blank event_type), so they are dropped up front.
+cleaned_blacklist = [w for w in detection_blacklist if str(w).strip()] or ["person"]
+
 detection_prompts = []
 prompt_labels = []  # aligned with detection_prompts: prompt i reports label prompt_labels[i]
-for word in detection_blacklist:
+for word in cleaned_blacklist:
     for prompt in PROMPT_MAP.get(normalize_word(word), [str(word)]):
         detection_prompts.append(prompt)
         prompt_labels.append(word)
@@ -183,7 +187,9 @@ if use_half:
 model.eval()
 
 # Precompute one text embedding per prompt variant. A frame matches if ANY prompt scores high.
-text_tokens = clip.tokenize(detection_prompts).to(device)
+# truncate=True: a custom word longer than CLIP's 77-token context would otherwise
+# raise inside tokenize and kill the worker at startup.
+text_tokens = clip.tokenize(detection_prompts, truncate=True).to(device)
 with torch.no_grad():
     text_embeddings = model.encode_text(text_tokens)
     text_embeddings /= text_embeddings.norm(dim=-1, keepdim=True)
