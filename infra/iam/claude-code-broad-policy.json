@@ -1,0 +1,70 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BroadInfraAccess",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:*",
+        "ecs:*",
+        "ecr:*",
+        "lambda:*",
+        "autoscaling:*",
+        "elasticloadbalancing:*",
+        "application-autoscaling:*",
+        "s3:*",
+        "rds:*",
+        "dynamodb:*",
+        "elasticache:*",
+        "vpc:*",
+        "route53:*",
+        "cloudformation:*",
+        "cloudwatch:*",
+        "logs:*",
+        "iam:*",
+        "sts:*",
+        "kms:*",
+        "secretsmanager:*",
+        "ssm:*",
+        "sns:*",
+        "sqs:*",
+        "apigateway:*",
+        "acm:*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "GuardrailsDenyAccountAndSecurityTeardown",
+      "Effect": "Deny",
+      "Action": [
+        "organizations:*",
+        "account:CloseAccount",
+        "account:PutAlternateContact",
+        "cloudtrail:StopLogging",
+        "cloudtrail:DeleteTrail",
+        "cloudtrail:UpdateTrail",
+        "guardduty:DeleteDetector",
+        "guardduty:DisassociateFromMasterAccount",
+        "config:StopConfigurationRecorder",
+        "config:DeleteConfigurationRecorder",
+        "iam:DeleteAccountPasswordPolicy"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "GuardrailsProtectOwnIdentity",
+      "Effect": "Deny",
+      "Action": [
+        "iam:DeleteUser",
+        "iam:DeleteUserPolicy",
+        "iam:DetachUserPolicy",
+        "iam:PutUserPolicy",
+        "iam:AttachUserPolicy",
+        "iam:CreateAccessKey",
+        "iam:DeleteAccessKey",
+        "iam:UpdateAccessKey"
+      ],
+      "Resource": "arn:aws:iam::*:user/claude-code-infra"
+    }
+  ]
+}
