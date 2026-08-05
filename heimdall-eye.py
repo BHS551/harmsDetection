@@ -267,21 +267,26 @@ with torch.no_grad():
     text_embeddings /= text_embeddings.norm(dim=-1, keepdim=True)
 
 # Gating consciente del concepto (fix falsos positivos en escena estática):
-# los EVENTOS ABSTRACTOS (robo/violencia/caída) son sucesos CON movimiento; correrlos
-# en el barrido de seguridad periódico sobre una escena INMÓVIL solo fabrica falsas
-# alarmas (medido en la cámara de un usuario: "robos" disparaba 14/14 en un parqueadero
-# quieto con margen ~0.08, por encima de amenazas reales). Por eso:
-#   - el barrido estático solo puntúa OBJETOS FÍSICOS (un cuchillo quieto sí importa);
-#   - los eventos abstractos SOLO se puntúan en la ruta de movimiento.
-ABSTRACT_EVENT_LABELS = {"caidas", "robos", "violencia"}
-def _is_event_label(label):
-    return normalize_word(label) in ABSTRACT_EVENT_LABELS
-object_idx = [i for i, l in enumerate(prompt_labels) if not _is_event_label(l)]
+# el discriminador correcto NO es un umbral sino el MOVIMIENTO. Se puntúan SOLO por
+# movimiento los conceptos cuya versión estática produce falsos positivos que se
+# solapan con los verdaderos:
+#   - EVENTOS abstractos (robo/violencia/caída): son sucesos con movimiento; en escena
+#     inmóvil solo hacen ruido (medido: "robos" 14/14 en un parqueadero quieto).
+#   - PERSONA: un objeto tipo-persona quieto (un casco de moto) puntúa MÁS como persona
+#     que una persona real pequeña -> ningún umbral los separa (medido: casco 0.035 vs
+#     persona real 0.024; calibrar mataba 0/35 personas reales). Pero una persona que
+#     CAMINA genera movimiento -> recorte a la región -> se detecta; un casco quieto no
+#     genera movimiento -> nunca se puntúa -> cero FP.
+# El barrido estático solo puntúa OBJETOS FÍSICOS que sí importan quietos (cuchillo/arma).
+MOTION_ONLY_LABELS = {"caidas", "robos", "violencia", "persona", "person"}
+def _is_motion_only(label):
+    return normalize_word(label) in MOTION_ONLY_LABELS
+object_idx = [i for i, l in enumerate(prompt_labels) if not _is_motion_only(l)]
 object_labels = [prompt_labels[i] for i in object_idx]
 object_text_embeddings = text_embeddings[object_idx] if object_idx else None
 OBJECT_COUNT = len(object_idx)
-_event_labels_active = sorted({prompt_labels[i] for i in range(len(prompt_labels)) if _is_event_label(prompt_labels[i])})
-print(f"Barrido estático (objetos): {sorted(set(object_labels))} | eventos solo-movimiento: {_event_labels_active}")
+_motion_only_active = sorted({prompt_labels[i] for i in range(len(prompt_labels)) if _is_motion_only(prompt_labels[i])})
+print(f"Barrido estático (objetos físicos): {sorted(set(object_labels))} | solo-movimiento: {_motion_only_active}")
 
 # Score contrastivo: en escena real, el score absoluto de CLIP sigue al CONTEXTO
 # (cocina/mesa/objeto-en-mano) casi tanto como al objeto, lo que dispara falsas
