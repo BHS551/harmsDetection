@@ -103,10 +103,13 @@ MAX_READ_FAILURES = int(os.environ.get("HEIMDALL_MAX_READ_FAILURES", "30"))
 # decodes from a keyframe and TP-Link GOPs are long, so the first frame can lag a few
 # seconds — wait it out instead of tearing down and re-handshaking.
 RTSP_OPEN_TIMEOUT = float(os.environ.get("HEIMDALL_OPEN_TIMEOUT", "12"))
-# Safety net: even with zero motion, run a FULL-frame sliding-window scan this often
-# (seconds). Motion-gating alone would miss a stationary target (knife on a table, a
-# person standing still) once MOG2 learns it into the background. 0 disables the sweep.
-FULL_SCAN_INTERVAL = float(os.environ.get("HEIMDALL_FULL_SCAN_INTERVAL", "3"))
+# EL MOVIMIENTO ES LA PRIMERA CAPA. La detección está APAGADA hasta que MOG2 detecta
+# movimiento; un movimiento abre una VENTANA de este número de frames en la que se corre
+# CLIP sobre la zona del movimiento. Al terminar la ventana, la detección se apaga hasta
+# el próximo movimiento. (Se eliminó el barrido periódico sobre escena estática: fabricaba
+# falsas alarmas —casco->persona, barrotes->robo—. Un objeto totalmente inmóvil ya no se
+# detecta, por diseño: si no hay movimiento, no hay nada que un vigilante consideraría.)
+DETECTION_WINDOW_FRAMES = tune("detection_window", "HEIMDALL_DETECTION_WINDOW", "50", int)
 
 
 
@@ -266,27 +269,11 @@ with torch.no_grad():
     text_embeddings = model.encode_text(text_tokens)
     text_embeddings /= text_embeddings.norm(dim=-1, keepdim=True)
 
-# Gating consciente del concepto (fix falsos positivos en escena estática):
-# el discriminador correcto NO es un umbral sino el MOVIMIENTO. Se puntúan SOLO por
-# movimiento los conceptos cuya versión estática produce falsos positivos que se
-# solapan con los verdaderos:
-#   - EVENTOS abstractos (robo/violencia/caída): son sucesos con movimiento; en escena
-#     inmóvil solo hacen ruido (medido: "robos" 14/14 en un parqueadero quieto).
-#   - PERSONA: un objeto tipo-persona quieto (un casco de moto) puntúa MÁS como persona
-#     que una persona real pequeña -> ningún umbral los separa (medido: casco 0.035 vs
-#     persona real 0.024; calibrar mataba 0/35 personas reales). Pero una persona que
-#     CAMINA genera movimiento -> recorte a la región -> se detecta; un casco quieto no
-#     genera movimiento -> nunca se puntúa -> cero FP.
-# El barrido estático solo puntúa OBJETOS FÍSICOS que sí importan quietos (cuchillo/arma).
-MOTION_ONLY_LABELS = {"caidas", "robos", "violencia", "persona", "person"}
-def _is_motion_only(label):
-    return normalize_word(label) in MOTION_ONLY_LABELS
-object_idx = [i for i, l in enumerate(prompt_labels) if not _is_motion_only(l)]
-object_labels = [prompt_labels[i] for i in object_idx]
-object_text_embeddings = text_embeddings[object_idx] if object_idx else None
-OBJECT_COUNT = len(object_idx)
-_motion_only_active = sorted({prompt_labels[i] for i in range(len(prompt_labels)) if _is_motion_only(prompt_labels[i])})
-print(f"Barrido estático (objetos físicos): {sorted(set(object_labels))} | solo-movimiento: {_motion_only_active}")
+# Con el gating por movimiento (ver DETECTION_WINDOW_FRAMES) TODOS los conceptos se
+# evalúan únicamente dentro de la ventana de movimiento. Ya no existe barrido sobre
+# escena estática —que era la fuente de falsas alarmas (casco->persona, barrotes->robo)—
+# así que no hace falta separar conceptos por tipo: el movimiento es el discriminador.
+print("Conceptos (evaluados SOLO con movimiento):", sorted(set(prompt_labels)))
 
 # Score contrastivo: en escena real, el score absoluto de CLIP sigue al CONTEXTO
 # (cocina/mesa/objeto-en-mano) casi tanto como al objeto, lo que dispara falsas
@@ -690,8 +677,9 @@ processed_counter = 0
 read_failures = 0   # consecutive failed reads; reconnect only after MAX_READ_FAILURES
 last_second_time = time.time()
 last_detection_time = 0.0
-last_full_scan = 0.0   # 0 => a full sweep is due immediately on the first frame
-last_alert_time = 0.0
+active_until_frame = 0         # detección ACTIVA mientras frame_counter <= este valor
+notified_this_window = False   # una sola notificación por ventana de movimiento
+last_motion_rois = None        # última zona de movimiento (se re-puntúa durante la ventana)
 consecutive_detection_count = 0
 cosine_history = deque(maxlen=30)   # bounded: no unbounded growth / GC churn
 last_annotated = None  # most recent detection overlay, kept for continuous display
@@ -739,9 +727,11 @@ try:
             if detected and warmed_up:
                 consecutive_detection_count += 1
                 print("Consecutive detections:", consecutive_detection_count)
-                if (consecutive_detection_count >= ALERT_THRESHOLD
-                        and frame_time - last_alert_time >= ALERT_COOLDOWN):
-                    last_alert_time = frame_time
+                # UNA sola notificación por ventana de movimiento (dedupe del burst):
+                # tras ALERT_THRESHOLD frames positivos seguidos se avisa una vez y no
+                # se vuelve a avisar hasta que un nuevo movimiento abra otra ventana.
+                if consecutive_detection_count >= ALERT_THRESHOLD and not notified_this_window:
+                    notified_this_window = True
                     # Fire-and-forget: S3 + API never block the capture loop.
                     io_executor.submit(handle_alert, enhanced.copy(), det_ts, score, coords, label)
             else:
@@ -750,8 +740,16 @@ try:
             if SHOW_WINDOWS:
                 last_annotated = draw_best_patch(enhanced, coords, score, label, detected)
 
-        # --- Stage 1: cheap motion gate on every frame (keeps bg model current) ---
+        # --- Stage 1 (PRIMERA CAPA): puerta de movimiento. La detección está APAGADA
+        #     salvo que el movimiento abra una ventana de DETECTION_WINDOW_FRAMES. ---
         rois = get_motion_rois(frame)
+        if rois:
+            last_motion_rois = rois
+            if frame_counter > active_until_frame:
+                # Estaba apagada -> el movimiento ABRE una nueva ventana de detección.
+                active_until_frame = frame_counter + DETECTION_WINDOW_FRAMES
+                notified_this_window = False
+                print(f"[movimiento] ventana de detección abierta ({DETECTION_WINDOW_FRAMES} frames)")
 
         if time.time() - last_second_time >= 1.0:
             busy = pending_detection is not None and not pending_detection.done()
@@ -763,36 +761,19 @@ try:
             processed_counter = 0
             last_second_time = time.time()
 
-        # --- Stage 2: motion gives a fast path; a periodic full-frame sweep is the
-        #     safety net so a STATIONARY OBJECT is still caught even with no motion. ---
-        # El barrido estático SOLO aplica a objetos físicos (OBJECT_COUNT>0): un cuchillo
-        # quieto sí importa, pero un evento abstracto (robo/violencia/caída) sobre una
-        # escena inmóvil es solo ruido -> se puntúa nada más en la ruta de movimiento.
-        full_scan_due = (
-            FULL_SCAN_INTERVAL > 0
-            and OBJECT_COUNT > 0
-            and frame_time - last_full_scan >= FULL_SCAN_INTERVAL
-        )
-        if full_scan_due:
-            scan_rois = multiscale_rois(frame)              # barrido SAHI multiescala
-            scan_emb, scan_labels = object_text_embeddings, object_labels  # solo objetos
-        elif rois:
-            scan_rois = rois                                # motion regions (todos los conceptos)
-            scan_emb, scan_labels = text_embeddings, prompt_labels
-        else:
-            scan_rois = None                                # nothing to scan this frame
+        # --- Stage 2: dentro de la ventana de movimiento se corre CLIP sobre la ZONA del
+        #     movimiento (rois actuales, o la última zona conocida si MOG2 la pierde un
+        #     instante). Fuera de la ventana, la detección está apagada. ---
+        detection_active = frame_counter <= active_until_frame
+        scan_rois = (rois or last_motion_rois) if detection_active else None
 
         worker_busy = pending_detection is not None and not pending_detection.done()
-        # A due full sweep bypasses the motion throttle so it never gets starved.
-        throttled = (frame_time - last_detection_time < MIN_DETECTION_INTERVAL) and not full_scan_due
+        throttled = frame_time - last_detection_time < MIN_DETECTION_INTERVAL
 
-        if scan_rois is not None and not worker_busy and not throttled:
+        if scan_rois and not worker_busy and not throttled:
             last_detection_time = frame_time
-            if full_scan_due:
-                last_full_scan = frame_time
-            pending_detection = detection_executor.submit(
-                run_detection, frame.copy(), scan_rois, scan_emb, scan_labels
-            )
+            # Todos los conceptos se evalúan (default): el movimiento ya es el filtro.
+            pending_detection = detection_executor.submit(run_detection, frame.copy(), scan_rois)
             pending_meta = (frame.copy(), frame_time)
 
         # --- Display every frame so the feed is visible even with no motion/detections ---
