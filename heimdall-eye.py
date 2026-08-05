@@ -3,13 +3,13 @@ import time
 import os
 import re
 import sys
+import threading
 import unicodedata
+import urllib.request
 from collections import deque
 from PIL import Image
 import torch
 import clip
-from twilio.rest import Client
-import numpy as np
 import concurrent.futures
 import http.client
 import json
@@ -24,35 +24,58 @@ with open(context_path, "r", encoding="utf-8") as f:
 print(data)
 print(type(data))
 
-# === Twilio configuration ===
-account_sid = ""
-auth_token = ""
-twilio_phone = "+18164767447"
-recipient_phone = "+573043566310"
-
 # === S3 Configuration ===
 S3_BUCKET_NAME = "detection-frames-tests"
 S3_PREFIX = "cameras/"
-client = Client(account_sid, auth_token)
 
-s3_client = boto3.client(
-    "s3",
-    region_name="us-east-1",
+s3_client = boto3.client("s3", region_name="us-east-1")
+secrets_client = boto3.client("secretsmanager", region_name="us-east-1")
+
+# Endpoint de eventos del worker (heartbeat + notificación al usuario).
+WORKER_EVENTS_HOST = os.environ.get(
+    "WORKER_EVENTS_HOST", "p4nojr0ec5.execute-api.us-east-1.amazonaws.com"
 )
 
-# === Runtime tuning (override via env vars without touching code) ===
+# Región e id de esta instancia EC2 (para auto-terminarse si la cámara no conecta).
+def get_instance_id():
+    try:
+        # IMDSv2
+        token = urllib.request.urlopen(
+            urllib.request.Request(
+                "http://169.254.169.254/latest/api/token",
+                method="PUT",
+                headers={"X-aws-ec2-metadata-token-ttl-seconds": "60"},
+            ),
+            timeout=2,
+        ).read().decode()
+        req = urllib.request.Request(
+            "http://169.254.169.254/latest/meta-data/instance-id",
+            headers={"X-aws-ec2-metadata-token": token},
+        )
+        return urllib.request.urlopen(req, timeout=2).read().decode()
+    except Exception:
+        return None
+
+# === Runtime tuning ===
+# Cada parámetro se puede sobreescribir por cámara desde context.json (lo envía
+# la UI/heimdalManager) o por variable de entorno; si no, usa el default.
+def tune(ctx_key, env_key, default, cast=float):
+    if isinstance(data, dict) and ctx_key in data and data[ctx_key] is not None:
+        return cast(data[ctx_key])
+    return cast(os.environ.get(env_key, default))
+
 # Live debug windows: OFF by default so headless/EC2 hosts don't crash on cv2.imshow.
 SHOW_WINDOWS = 0
 # Max detections-per-second we actually run CLIP on (time-based, FPS-independent).
-MIN_DETECTION_INTERVAL = float(os.environ.get("HEIMDALL_MIN_INTERVAL", "0.4"))
+MIN_DETECTION_INTERVAL = tune("min_interval", "HEIMDALL_MIN_INTERVAL", "0.4", float)
 # Consecutive positive frames required before firing an alert (debounces false positives).
-ALERT_THRESHOLD = int(os.environ.get("HEIMDALL_ALERT_THRESHOLD", "3"))
+ALERT_THRESHOLD = tune("alert_threshold", "HEIMDALL_ALERT_THRESHOLD", "3", int)
 # Minimum seconds between two alerts for the same camera (avoids spamming S3/API).
-ALERT_COOLDOWN = float(os.environ.get("HEIMDALL_ALERT_COOLDOWN", "10"))
+ALERT_COOLDOWN = tune("alert_cooldown", "HEIMDALL_ALERT_COOLDOWN", "10", float)
 # Frames to let the background model warm up before trusting motion (skips alerts).
-WARMUP_FRAMES = int(os.environ.get("HEIMDALL_WARMUP_FRAMES", "30"))
-# CLIP cosine-similarity threshold for a positive match.
-DETECTION_THRESHOLD = float(os.environ.get("HEIMDALL_THRESHOLD", "0.27"))
+WARMUP_FRAMES = tune("warmup_frames", "HEIMDALL_WARMUP_FRAMES", "30", int)
+# CLIP cosine-similarity threshold for a positive match (default global).
+DETECTION_THRESHOLD = tune("threshold", "HEIMDALL_THRESHOLD", "0.27", float)
 # Motion detection runs on a downscaled frame for speed; ROIs are scaled back up.
 MOTION_DOWNSCALE = 0.5
 # Minimum contour area (in downscaled pixels) to count as real motion.
@@ -72,13 +95,6 @@ RTSP_OPEN_TIMEOUT = float(os.environ.get("HEIMDALL_OPEN_TIMEOUT", "12"))
 FULL_SCAN_INTERVAL = float(os.environ.get("HEIMDALL_FULL_SCAN_INTERVAL", "3"))
 
 
-def send_sms_alert(message_body):
-    message = client.messages.create(
-        body=message_body,
-        from_=twilio_phone,
-        to=recipient_phone
-    )
-    print("SMS sent:", message.sid)
 
 def mask_rtsp_url(url):
     return re.sub(r":([^:@/]+)@", ":****@", url)
@@ -121,8 +137,22 @@ def open_rtsp_capture(url, retries=5, delay_sec=2):
     return None
 
 # === Camera and Detection Configuration ===
-rtsp_url = data['rtsp_path']
+# La URL RTSP (con credenciales) se obtiene de Secrets Manager por referencia
+# (rtsp_secret_id); así no viaja en el UserData ni queda en claro en el disco.
+# Se mantiene compatibilidad con context.json que traiga rtsp_path directo.
+def resolve_rtsp_url(ctx):
+    if ctx.get("rtsp_path"):
+        return ctx["rtsp_path"]
+    secret_id = ctx.get("rtsp_secret_id")
+    if secret_id:
+        return secrets_client.get_secret_value(SecretId=secret_id)["SecretString"]
+    return None
+
+rtsp_url = resolve_rtsp_url(data)
+if not rtsp_url:
+    raise Exception("No RTSP source in context (rtsp_path o rtsp_secret_id)")
 owner_uid = data.get('owner_uid', '')
+device_id = str(data.get('instance_id') or data.get('device_id') or '')
 
 # Prohibited items to detect come from the context blacklist (e.g. ["knife"]).
 detection_blacklist = data.get("detection_blacklist") or ["person"]
@@ -163,6 +193,32 @@ def normalize_word(word):
         c for c in unicodedata.normalize("NFD", word)
         if unicodedata.category(c) != "Mn"
     )
+
+
+# Umbral por concepto: los prompts de frase (acciones) puntúan distinto a los de
+# objeto, así que un único umbral global es tosco. Se puede sobreescribir desde
+# context.json con "thresholds": { "caidas": 0.24, ... }. Fallback: DETECTION_THRESHOLD.
+DEFAULT_PROMPT_THRESHOLDS = {
+    "persona": 0.27,
+    "person": 0.27,
+    "cuchillo": 0.27,
+    "knife": 0.27,
+    "caidas": 0.24,
+    "robos": 0.25,
+    "violencia": 0.25,
+}
+_ctx_thresholds = data.get("thresholds") if isinstance(data, dict) else None
+if isinstance(_ctx_thresholds, dict):
+    for k, v in _ctx_thresholds.items():
+        try:
+            DEFAULT_PROMPT_THRESHOLDS[normalize_word(k)] = float(v)
+        except (TypeError, ValueError):
+            pass
+
+
+def threshold_for(label):
+    """Umbral aplicable a la palabra ganadora (con fallback al global)."""
+    return DEFAULT_PROMPT_THRESHOLDS.get(normalize_word(label), DETECTION_THRESHOLD)
 
 
 # Empty/whitespace-only entries would become empty CLIP prompts that can still
@@ -295,7 +351,8 @@ def run_detection(frame, rois):
     best_coords = coords_list[patch_idx]
     # Report the user's word for the winning prompt, not the internal English prompt.
     best_label = prompt_labels[prompt_idx]
-    detected = best_score > DETECTION_THRESHOLD
+    # Umbral específico del concepto ganador (no un único global para todo).
+    detected = best_score > threshold_for(best_label)
     return enhanced, best_score, detected, best_coords, best_label
 
 
@@ -320,7 +377,10 @@ def reinitialize_capture():
     time.sleep(2)
     cap = open_rtsp_capture(rtsp_url, retries=3, delay_sec=2)
     if cap is None:
-        raise Exception(f"Failed to reconnect RTSP stream: {mask_rtsp_url(rtsp_url)}")
+        # La cámara cayó de forma persistente: auto-terminar en vez de reintentar
+        # para siempre gastando la instancia.
+        terminate_self("RTSP inalcanzable tras reconexión")
+        sys.exit(1)
 
 def storeRegister(data):
     token = get_firebase_token()
@@ -338,6 +398,64 @@ def storeRegister(data):
     print("Status:", res.status)
     response_data = res.read()
     print(response_data.decode("utf-8"))
+
+
+def post_worker_event(payload):
+    """POST autenticado al Lambda workerEvents (heartbeat / notify)."""
+    token = get_firebase_token()
+    conn = http.client.HTTPSConnection(WORKER_EVENTS_HOST, timeout=10)
+    conn.request(
+        "POST", "/", json.dumps(payload),
+        {"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+    )
+    res = conn.getresponse()
+    res.read()
+    return res.status
+
+
+def notify_user(event_type, camera, score, detection_id):
+    """Avisa al usuario por los canales que configuró (SMS/email)."""
+    try:
+        post_worker_event({
+            "action": "notify",
+            "owner_uid": owner_uid,
+            "event_type": event_type,
+            "camera": camera,
+            "cosine_sim": round(float(score), 3),
+            "detection_id": detection_id,
+        })
+    except Exception as e:
+        print("notify_user error:", e)
+
+
+def terminate_self(reason):
+    """Auto-termina esta instancia EC2 (la cámara no conecta -> no seguir facturando)."""
+    print(f"Auto-terminando la instancia: {reason}")
+    iid = get_instance_id()
+    if not iid:
+        # Sin IMDS (p.ej. entorno local): salir para que el supervisor no reintente en vano.
+        os._exit(3)
+    try:
+        boto3.client("ec2", region_name="us-east-1").terminate_instances(InstanceIds=[iid])
+    except Exception as e:
+        print("terminate_self error:", e)
+        os._exit(3)
+
+
+def heartbeat_loop():
+    """Reporta 'vivo' cada 30s para que la consola muestre el estado real."""
+    while True:
+        try:
+            post_worker_event({
+                "action": "heartbeat",
+                "device_id": device_id,
+                "owner_uid": owner_uid,
+                "camera_name": data.get("camera_name", ""),
+                "status": "running",
+            })
+        except Exception as e:
+            print("heartbeat error:", e)
+        time.sleep(30)
 
 def upload_frame_to_s3(frame, ts, detection_score, coords=None, detection_id=None):
     timestr = time.strftime('%Y-%m-%d_%H-%M-%S', time.localtime(ts))
@@ -382,18 +500,26 @@ def handle_alert(frame, ts, score, coords, label):
             "image_key": image_key,
             "owner_uid": owner_uid,
         })
+        # Avisar al usuario por su canal configurado (email/SMS).
+        notify_user(label, data.get('camera_name', 'entrance'), score, detection_id)
     except Exception as e:
         print("Alert handler error:", e)
 
 
+# Heartbeat en segundo plano (daemon): la consola ve el estado real del worker.
+threading.Thread(target=heartbeat_loop, daemon=True).start()
+
 # Open the RTSP stream
 cap = open_rtsp_capture(rtsp_url)
 if cap is None:
-    raise Exception(
+    # La cámara no conecta: no dejar la instancia encendida facturando sin hacer
+    # nada. Se auto-termina en vez de morir y quedar colgada.
+    print(
         f"Failed to open RTSP stream: {mask_rtsp_url(rtsp_url)}. "
-        "Check that the ngrok tunnel is running, the port matches context.json, "
-        "and ffmpeg is installed on the host (apt install ffmpeg)."
+        "Revisa el túnel/puerto y que ffmpeg esté instalado."
     )
+    terminate_self("RTSP inalcanzable en el arranque")
+    sys.exit(1)
 
 print("Processing frames from RTSP stream...")
 
@@ -413,7 +539,6 @@ last_full_scan = 0.0   # 0 => a full sweep is due immediately on the first frame
 last_alert_time = 0.0
 consecutive_detection_count = 0
 cosine_history = deque(maxlen=30)   # bounded: no unbounded growth / GC churn
-patch_history = deque(maxlen=30)
 last_annotated = None  # most recent detection overlay, kept for continuous display
 
 try:
@@ -452,7 +577,6 @@ try:
             processed_counter += 1
 
             cosine_history.append((score, det_ts))
-            patch_history.append((score, det_ts, coords, label, detected))
             print(f"[{format_full_time(det_ts)}] score: {score:.3f} | "
                   f"match: {label} | detected: {detected}")
 
