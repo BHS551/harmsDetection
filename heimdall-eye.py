@@ -104,12 +104,13 @@ MAX_READ_FAILURES = int(os.environ.get("HEIMDALL_MAX_READ_FAILURES", "30"))
 # seconds — wait it out instead of tearing down and re-handshaking.
 RTSP_OPEN_TIMEOUT = float(os.environ.get("HEIMDALL_OPEN_TIMEOUT", "12"))
 # EL MOVIMIENTO ES LA PRIMERA CAPA. La detección está APAGADA hasta que MOG2 detecta
-# movimiento; un movimiento abre una VENTANA de este número de frames en la que se corre
-# CLIP sobre la zona del movimiento. Al terminar la ventana, la detección se apaga hasta
-# el próximo movimiento. (Se eliminó el barrido periódico sobre escena estática: fabricaba
-# falsas alarmas —casco->persona, barrotes->robo—. Un objeto totalmente inmóvil ya no se
+# movimiento; cada movimiento abre/RE-ARMA una VENTANA de detección de esta duración
+# (SEGUNDOS, independiente de los FPS) en la que se corre CLIP sobre la zona del
+# movimiento. La ventana se apaga cuando transcurre este tiempo desde el ÚLTIMO
+# movimiento. (Se eliminó el barrido periódico sobre escena estática: fabricaba falsas
+# alarmas —casco->persona, barrotes->robo—. Un objeto totalmente inmóvil ya no se
 # detecta, por diseño: si no hay movimiento, no hay nada que un vigilante consideraría.)
-DETECTION_WINDOW_FRAMES = tune("detection_window", "HEIMDALL_DETECTION_WINDOW", "50", int)
+DETECTION_WINDOW_SECONDS = tune("detection_window_seconds", "HEIMDALL_DETECTION_WINDOW_SEC", "60", float)
 
 
 
@@ -269,7 +270,7 @@ with torch.no_grad():
     text_embeddings = model.encode_text(text_tokens)
     text_embeddings /= text_embeddings.norm(dim=-1, keepdim=True)
 
-# Con el gating por movimiento (ver DETECTION_WINDOW_FRAMES) TODOS los conceptos se
+# Con el gating por movimiento (ver DETECTION_WINDOW_SECONDS) TODOS los conceptos se
 # evalúan únicamente dentro de la ventana de movimiento. Ya no existe barrido sobre
 # escena estática —que era la fuente de falsas alarmas (casco->persona, barrotes->robo)—
 # así que no hace falta separar conceptos por tipo: el movimiento es el discriminador.
@@ -677,7 +678,7 @@ processed_counter = 0
 read_failures = 0   # consecutive failed reads; reconnect only after MAX_READ_FAILURES
 last_second_time = time.time()
 last_detection_time = 0.0
-active_until_frame = 0         # detección ACTIVA mientras frame_counter <= este valor
+active_until_time = 0.0        # detección ACTIVA mientras frame_time <= este instante
 notified_this_window = False   # una sola notificación por ventana de movimiento
 last_motion_rois = None        # última zona de movimiento (se re-puntúa durante la ventana)
 consecutive_detection_count = 0
@@ -741,15 +742,16 @@ try:
                 last_annotated = draw_best_patch(enhanced, coords, score, label, detected)
 
         # --- Stage 1 (PRIMERA CAPA): puerta de movimiento. La detección está APAGADA
-        #     salvo que el movimiento abra una ventana de DETECTION_WINDOW_FRAMES. ---
+        #     salvo que el movimiento abra/re-arme una ventana de DETECTION_WINDOW_SECONDS. ---
         rois = get_motion_rois(frame)
         if rois:
             last_motion_rois = rois
-            if frame_counter > active_until_frame:
-                # Estaba apagada -> el movimiento ABRE una nueva ventana de detección.
-                active_until_frame = frame_counter + DETECTION_WINDOW_FRAMES
+            if frame_time > active_until_time:
+                # Estaba apagada -> este movimiento ABRE una nueva ventana (reset de aviso).
                 notified_this_window = False
-                print(f"[movimiento] ventana de detección abierta ({DETECTION_WINDOW_FRAMES} frames)")
+                print(f"[movimiento] ventana de detección abierta ({DETECTION_WINDOW_SECONDS:.0f}s)")
+            # Cada movimiento RE-ARMA el minuto: la ventana dura hasta 60s tras el último.
+            active_until_time = frame_time + DETECTION_WINDOW_SECONDS
 
         if time.time() - last_second_time >= 1.0:
             busy = pending_detection is not None and not pending_detection.done()
@@ -764,7 +766,7 @@ try:
         # --- Stage 2: dentro de la ventana de movimiento se corre CLIP sobre la ZONA del
         #     movimiento (rois actuales, o la última zona conocida si MOG2 la pierde un
         #     instante). Fuera de la ventana, la detección está apagada. ---
-        detection_active = frame_counter <= active_until_frame
+        detection_active = frame_time <= active_until_time
         scan_rois = (rois or last_motion_rois) if detection_active else None
 
         worker_busy = pending_detection is not None and not pending_detection.done()
