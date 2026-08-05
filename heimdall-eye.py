@@ -266,6 +266,23 @@ with torch.no_grad():
     text_embeddings = model.encode_text(text_tokens)
     text_embeddings /= text_embeddings.norm(dim=-1, keepdim=True)
 
+# Gating consciente del concepto (fix falsos positivos en escena estática):
+# los EVENTOS ABSTRACTOS (robo/violencia/caída) son sucesos CON movimiento; correrlos
+# en el barrido de seguridad periódico sobre una escena INMÓVIL solo fabrica falsas
+# alarmas (medido en la cámara de un usuario: "robos" disparaba 14/14 en un parqueadero
+# quieto con margen ~0.08, por encima de amenazas reales). Por eso:
+#   - el barrido estático solo puntúa OBJETOS FÍSICOS (un cuchillo quieto sí importa);
+#   - los eventos abstractos SOLO se puntúan en la ruta de movimiento.
+ABSTRACT_EVENT_LABELS = {"caidas", "robos", "violencia"}
+def _is_event_label(label):
+    return normalize_word(label) in ABSTRACT_EVENT_LABELS
+object_idx = [i for i, l in enumerate(prompt_labels) if not _is_event_label(l)]
+object_labels = [prompt_labels[i] for i in object_idx]
+object_text_embeddings = text_embeddings[object_idx] if object_idx else None
+OBJECT_COUNT = len(object_idx)
+_event_labels_active = sorted({prompt_labels[i] for i in range(len(prompt_labels)) if _is_event_label(prompt_labels[i])})
+print(f"Barrido estático (objetos): {sorted(set(object_labels))} | eventos solo-movimiento: {_event_labels_active}")
+
 # Score contrastivo: en escena real, el score absoluto de CLIP sigue al CONTEXTO
 # (cocina/mesa/objeto-en-mano) casi tanto como al objeto, lo que dispara falsas
 # alarmas. Restar el mejor "distractor" (objeto/escena cotidiana) por parche
@@ -287,6 +304,24 @@ DEFAULT_DISTRACTORS = [
 ]
 _ctx_distractors = data.get("distractor_prompts") if isinstance(data, dict) else None
 distractor_prompts = _ctx_distractors if (isinstance(_ctx_distractors, list) and _ctx_distractors) else DEFAULT_DISTRACTORS
+
+# Distractores CONSCIENTES del concepto: si el usuario quiere detectar "persona",
+# restar "a person standing normally"/"a photo of a hand" cancela el propio objetivo
+# (el margen contrastivo se hunde y NUNCA detecta personas). Medido sobre imágenes con
+# personas: con esos distractores detecta 4/35; sin ellos, 16/35. Se eliminan los
+# distractores que colisionan con algún concepto que el usuario SÍ quiere detectar.
+CONFLICTING_DISTRACTORS = {
+    "persona": {"a person standing normally", "a photo of a hand"},
+    "person": {"a person standing normally", "a photo of a hand"},
+}
+_active_targets = {normalize_word(w) for w in cleaned_blacklist}
+_drop_distractors = set()
+for _c in _active_targets:
+    _drop_distractors |= CONFLICTING_DISTRACTORS.get(_c, set())
+if _drop_distractors:
+    distractor_prompts = [d for d in distractor_prompts if d not in _drop_distractors]
+    print("Distractores eliminados por colisión con el objetivo:", sorted(_drop_distractors))
+
 distractor_tokens = clip.tokenize(distractor_prompts, truncate=True).to(device)
 with torch.no_grad():
     distractor_embeddings = model.encode_text(distractor_tokens)
@@ -413,11 +448,18 @@ def enhance_frame(frame):
     return cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
 
 
-def run_detection(frame, rois):
-    """Stage 2 (expensive): run CLIP only on the motion ROIs, batched.
+def run_detection(frame, rois, concept_embeddings=None, concept_labels=None):
+    """Stage 2 (expensive): run CLIP only on the given ROIs, batched.
+
+    concept_embeddings/concept_labels seleccionan QUÉ conceptos puntuar: en la ruta de
+    movimiento se usan todos; en el barrido estático solo los de objeto físico (para no
+    fabricar falsas alarmas con eventos abstractos). Por defecto usa todos (compat).
 
     Returns (enhanced_frame, best_score, detected, best_coords, best_label).
     """
+    if concept_embeddings is None:
+        concept_embeddings = text_embeddings
+        concept_labels = prompt_labels
     enhanced = enhance_frame(frame)
     image = Image.fromarray(cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB))
 
@@ -440,7 +482,7 @@ def run_detection(frame, rois):
         patch_embeddings = model.encode_image(batch)
         patch_embeddings /= patch_embeddings.norm(dim=-1, keepdim=True)
         # [parches, prompts] similitud con el concepto.
-        sims = patch_embeddings @ text_embeddings.T
+        sims = patch_embeddings @ concept_embeddings.T
         # [parches, distractores] similitud con objetos/escenas cotidianas.
         dsims = patch_embeddings @ distractor_embeddings.T
         # Score CONTRASTIVO: por cada parche, resta el mejor distractor. Así un
@@ -456,7 +498,7 @@ def run_detection(frame, rois):
     best_sim = float(sims[patch_idx, prompt_idx].item())        # sim cruda (para log)
     best_coords = coords_list[patch_idx]
     # Report the user's word for the winning prompt, not the internal English prompt.
-    best_label = prompt_labels[prompt_idx]
+    best_label = concept_labels[prompt_idx]
     # Umbral específico del concepto ganador, aplicado sobre el margen.
     detected = best_score > threshold_for(best_label)
     if detected:
@@ -717,14 +759,23 @@ try:
             last_second_time = time.time()
 
         # --- Stage 2: motion gives a fast path; a periodic full-frame sweep is the
-        #     safety net so a stationary target is still caught even with no motion. ---
-        full_scan_due = FULL_SCAN_INTERVAL > 0 and frame_time - last_full_scan >= FULL_SCAN_INTERVAL
+        #     safety net so a STATIONARY OBJECT is still caught even with no motion. ---
+        # El barrido estático SOLO aplica a objetos físicos (OBJECT_COUNT>0): un cuchillo
+        # quieto sí importa, pero un evento abstracto (robo/violencia/caída) sobre una
+        # escena inmóvil es solo ruido -> se puntúa nada más en la ruta de movimiento.
+        full_scan_due = (
+            FULL_SCAN_INTERVAL > 0
+            and OBJECT_COUNT > 0
+            and frame_time - last_full_scan >= FULL_SCAN_INTERVAL
+        )
         if full_scan_due:
-            scan_rois = multiscale_rois(frame)   # barrido SAHI multiescala
+            scan_rois = multiscale_rois(frame)              # barrido SAHI multiescala
+            scan_emb, scan_labels = object_text_embeddings, object_labels  # solo objetos
         elif rois:
-            scan_rois = rois                         # motion regions only
+            scan_rois = rois                                # motion regions (todos los conceptos)
+            scan_emb, scan_labels = text_embeddings, prompt_labels
         else:
-            scan_rois = None                         # nothing to scan this frame
+            scan_rois = None                                # nothing to scan this frame
 
         worker_busy = pending_detection is not None and not pending_detection.done()
         # A due full sweep bypasses the motion throttle so it never gets starved.
@@ -734,7 +785,9 @@ try:
             last_detection_time = frame_time
             if full_scan_due:
                 last_full_scan = frame_time
-            pending_detection = detection_executor.submit(run_detection, frame.copy(), scan_rois)
+            pending_detection = detection_executor.submit(
+                run_detection, frame.copy(), scan_rois, scan_emb, scan_labels
+            )
             pending_meta = (frame.copy(), frame_time)
 
         # --- Display every frame so the feed is visible even with no motion/detections ---
