@@ -85,6 +85,17 @@ MOTION_DOWNSCALE = 0.5
 MIN_MOTION_AREA = 500
 # Cap ROIs per frame so a noisy scene can't blow up the CLIP batch.
 MAX_ROIS = 10
+# Region proposal (validado offline sobre imágenes reales de Sohas): la ganancia
+# viene de CUADRAR la caja de movimiento y garantizar un lado mínimo, NO de añadir
+# contexto. Barrido medido (recall @umbral fijo): crudo 88% / pequeños 77%  ->
+# solo-min-size 93% / pequeños 87%  ->  con padding 0.4 baja a 80% / 64% (el
+# contexto extra diluye el objeto y hunde el score contrastivo). Por eso el padding
+# default es 0.0: solo cuadramos y forzamos tamaño mínimo. Configurable por cámara.
+ROI_PADDING = tune("roi_padding", "HEIMDALL_ROI_PADDING", "0.0", float)
+# Lado mínimo del recorte (px, resolución completa) para que el upscale a 224 no
+# quede borroso. Cajas de movimiento diminutas se expanden hasta este tamaño; es
+# lo que recupera los objetos pequeños (<1% del frame), la debilidad medida.
+MIN_ROI_SIZE = tune("min_roi_size", "HEIMDALL_MIN_ROI_SIZE", "96", int)
 # Tolerate this many consecutive failed reads (jittery ngrok/RTSP) before reconnecting.
 # A single dropped read is normal; reconnecting on every one just thrashes the tunnel.
 MAX_READ_FAILURES = int(os.environ.get("HEIMDALL_MAX_READ_FAILURES", "30"))
@@ -260,6 +271,12 @@ with torch.no_grad():
 # alarmas. Restar el mejor "distractor" (objeto/escena cotidiana) por parche
 # cancela ese sesgo. Validado en imágenes reales de armas vs objetos de mano:
 # falsas alarmas 78% -> 17% a igual recall. Configurable con context["distractor_prompts"].
+#
+# NOTA: se quitó "a photo of food on a table". Medido sobre cuchillos reales de
+# COCO (mayoría en cocina), ese distractor colisionaba con los positivos —el
+# cuchillo ESTÁ sobre una mesa con comida— y hundía el margen: AUC 0.465 (peor que
+# azar) con él vs 0.739 sin él; recall en cocina 10% -> 24% a igual tasa de falsas
+# alarmas. Como la prioridad es no perder amenazas, se elimina.
 DEFAULT_DISTRACTORS = [
     "a photo of a smartphone",
     "a photo of a wallet",
@@ -267,7 +284,6 @@ DEFAULT_DISTRACTORS = [
     "a person standing normally",
     "an empty room",
     "furniture",
-    "a photo of food on a table",
 ]
 _ctx_distractors = data.get("distractor_prompts") if isinstance(data, dict) else None
 distractor_prompts = _ctx_distractors if (isinstance(_ctx_distractors, list) and _ctx_distractors) else DEFAULT_DISTRACTORS
@@ -282,8 +298,57 @@ bg_subtractor = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16,
 motion_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 
 
+def pad_square_roi(box, w, h, pad=ROI_PADDING, min_size=MIN_ROI_SIZE):
+    """Cuadra la caja de movimiento y le garantiza un lado mínimo (así un objeto
+    pequeño se amplía limpio en vez de diluirse al reescalar a 224). Con pad=0 no
+    añade contexto (el contexto extra baja el score contrastivo). El recorte
+    cuadrado hace que el center-crop de CLIP deje fuera menos contenido. Recorta a
+    los límites del frame. Devuelve coords en resolución completa."""
+    x1, y1, x2, y2 = box
+    bw, bh = x2 - x1, y2 - y1
+    cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+    # medio-lado = mayor de: caja+padding, o el mínimo exigido.
+    half = max(bw * (1 + 2 * pad) / 2.0, bh * (1 + 2 * pad) / 2.0, min_size / 2.0)
+    nx1 = int(max(0, cx - half)); ny1 = int(max(0, cy - half))
+    nx2 = int(min(w, cx + half)); ny2 = int(min(h, cy + half))
+    return (nx1, ny1, nx2, ny2)
+
+
+def _iou(a, b):
+    ax1, ay1, ax2, ay2 = a; bx1, by1, bx2, by2 = b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+    inter = iw * ih
+    if inter == 0:
+        return 0.0
+    ua = (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - inter
+    return inter / ua if ua else 0.0
+
+
+def merge_boxes(boxes, iou_thr=0.3):
+    """Fusiona cajas solapadas para no fragmentar un mismo objeto en varios recortes
+    (cada fragmento perdería contexto y bajaría el score)."""
+    merged = []
+    for b in boxes:
+        placed = False
+        for i, m in enumerate(merged):
+            if _iou(b, m) > iou_thr:
+                merged[i] = (min(b[0], m[0]), min(b[1], m[1]),
+                             max(b[2], m[2]), max(b[3], m[3]))
+                placed = True
+                break
+        if not placed:
+            merged.append(b)
+    return merged
+
+
 def get_motion_rois(frame):
-    """Stage 1 (cheap): return bounding boxes of moving regions in full-res coords."""
+    """Stage 1 (cheap): return bounding boxes of moving regions in full-res coords.
+
+    Cada caja de movimiento se padea + cuadra + garantiza tamaño mínimo (region
+    proposal) y luego se fusionan las solapadas, de modo que CLIP recibe recortes
+    bien enmarcados en vez de cajas apretadas que diluyen los objetos pequeños."""
     small = cv2.resize(frame, None, fx=MOTION_DOWNSCALE, fy=MOTION_DOWNSCALE)
     mask = bg_subtractor.apply(small)
     # Drop MOG2 shadow pixels (value 127) and denoise.
@@ -303,9 +368,10 @@ def get_motion_rois(frame):
         x2 = min(w, int((x + bw) * inv))
         y2 = min(h, int((y + bh) * inv))
         rois.append((area, (x1, y1, x2, y2)))
-    # Keep the largest motion regions only.
+    # Keep the largest motion regions only, then frame them with context and merge.
     rois.sort(key=lambda r: r[0], reverse=True)
-    return [box for _, box in rois[:MAX_ROIS]]
+    boxes = [pad_square_roi(box, w, h) for _, box in rois[:MAX_ROIS]]
+    return merge_boxes(boxes)
 
 
 def sliding_window_rois(frame, patch_size=224, stride=192):
