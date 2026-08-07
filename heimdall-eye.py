@@ -72,6 +72,10 @@ MIN_DETECTION_INTERVAL = tune("min_interval", "HEIMDALL_MIN_INTERVAL", "0.4", fl
 ALERT_THRESHOLD = tune("alert_threshold", "HEIMDALL_ALERT_THRESHOLD", "3", int)
 # Minimum seconds between two alerts for the same camera (avoids spamming S3/API).
 ALERT_COOLDOWN = tune("alert_cooldown", "HEIMDALL_ALERT_COOLDOWN", "10", float)
+# Re-alerta en amenaza PERSISTENTE: mientras un objeto/persona siga detectándose,
+# se vuelve a avisar cada este intervalo (segundos), en vez de una sola vez. Útil
+# para casos como "alguien parado con un cuchillo" (no basta con avisar una vez).
+REALERT_INTERVAL = tune("realert_interval", "HEIMDALL_REALERT_INTERVAL", "20", float)
 # Frames to let the background model warm up before trusting motion (skips alerts).
 WARMUP_FRAMES = tune("warmup_frames", "HEIMDALL_WARMUP_FRAMES", "30", int)
 # Umbral del MARGEN contrastivo (concepto − mejor distractor) para un positivo.
@@ -684,7 +688,7 @@ read_failures = 0   # consecutive failed reads; reconnect only after MAX_READ_FA
 last_second_time = time.time()
 last_detection_time = 0.0
 active_until_time = 0.0        # detección ACTIVA mientras frame_time <= este instante
-notified_this_window = False   # una sola notificación por ventana de movimiento
+last_alert_time = 0.0          # última alerta emitida (para re-alertar cada REALERT_INTERVAL)
 last_motion_rois = None        # última zona de movimiento (se re-puntúa durante la ventana)
 consecutive_detection_count = 0
 cosine_history = deque(maxlen=30)   # bounded: no unbounded growth / GC churn
@@ -733,11 +737,13 @@ try:
             if detected and warmed_up:
                 consecutive_detection_count += 1
                 print("Consecutive detections:", consecutive_detection_count)
-                # UNA sola notificación por ventana de movimiento (dedupe del burst):
-                # tras ALERT_THRESHOLD frames positivos seguidos se avisa una vez y no
-                # se vuelve a avisar hasta que un nuevo movimiento abra otra ventana.
-                if consecutive_detection_count >= ALERT_THRESHOLD and not notified_this_window:
-                    notified_this_window = True
+                # Re-alerta en amenaza PERSISTENTE: tras ALERT_THRESHOLD frames positivos
+                # seguidos se avisa, y se VUELVE a avisar cada REALERT_INTERVAL mientras la
+                # amenaza siga presente (no una sola vez por ventana). Así "alguien parado
+                # con un cuchillo" genera avisos repetidos, no uno solo.
+                if (consecutive_detection_count >= ALERT_THRESHOLD
+                        and frame_time - last_alert_time >= REALERT_INTERVAL):
+                    last_alert_time = frame_time
                     # Fire-and-forget: S3 + API never block the capture loop.
                     io_executor.submit(handle_alert, enhanced.copy(), det_ts, score, coords, label)
             else:
@@ -752,8 +758,7 @@ try:
         if rois:
             last_motion_rois = rois
             if frame_time > active_until_time:
-                # Estaba apagada -> este movimiento ABRE una nueva ventana (reset de aviso).
-                notified_this_window = False
+                # Estaba apagada -> este movimiento ABRE una nueva ventana de detección.
                 print(f"[movimiento] ventana de detección abierta ({DETECTION_WINDOW_SECONDS:.0f}s)")
             # Cada movimiento RE-ARMA el minuto: la ventana dura hasta 60s tras el último.
             active_until_time = frame_time + DETECTION_WINDOW_SECONDS
