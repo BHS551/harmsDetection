@@ -16,6 +16,7 @@ S3_PREFIX = "cameras/"
 WORKER_EVENTS_HOST = os.environ.get("WORKER_EVENTS_HOST", "p4nojr0ec5.execute-api.us-east-1.amazonaws.com")
 STORE_REGISTER_HOST = os.environ.get("STORE_REGISTER_HOST", "c038gkbfm8.execute-api.us-east-1.amazonaws.com")
 HEIMDAL_MANAGER_HOST = os.environ.get("HEIMDAL_MANAGER_HOST", "a2ukt8vyhb.execute-api.us-east-1.amazonaws.com")
+HEIMDAL_MANAGER_PATH = os.environ.get("HEIMDAL_MANAGER_PATH", "/default/heimdalManager")
 # Secreto compartido para que el motion box invoque el "ensureAnalysis" de
 # HeimdalManager sin token de usuario (autenticación máquina-a-máquina).
 INTERNAL_SECRET = os.environ.get("HEIMDALL_INTERNAL_SECRET", "")
@@ -112,7 +113,7 @@ def ensure_analysis():
     _last_wake["t"] = now
     try:
         conn = http.client.HTTPSConnection(HEIMDAL_MANAGER_HOST, timeout=8)
-        conn.request("POST", "/", json.dumps({"action": "ensureAnalysis"}),
+        conn.request("POST", HEIMDAL_MANAGER_PATH, json.dumps({"action": "ensureAnalysis"}),
                      {"Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET})
         res = conn.getresponse(); res.read(); conn.close()
     except Exception as e:
