@@ -199,8 +199,13 @@ PROMPT_MAP = {
     ],
     "persona": ["a photo of a person"],
     "person": ["a photo of a person"],
-    "cuchillo": ["a photo of a knife"],
-    "knife": ["a photo of a knife"],
+    # Prompts centrados en la HOJA/metal (no en "sostener"), para subir el recall del
+    # cuchillo SIN dispararse con objetos de mano (teléfono/billetera comparten el
+    # contexto "en mano", pero no la hoja metálica). Medido: recall 48%->65% a 10% FA.
+    "cuchillo": ["a photo of a knife", "a sharp knife blade", "a metal knife blade",
+                 "the blade of a knife", "a kitchen knife"],
+    "knife": ["a photo of a knife", "a sharp knife blade", "a metal knife blade",
+              "the blade of a knife", "a kitchen knife"],
 }
 
 
@@ -219,8 +224,8 @@ def normalize_word(word):
 DEFAULT_PROMPT_THRESHOLDS = {
     "persona": 0.03,
     "person": 0.03,
-    "cuchillo": 0.02,
-    "knife": 0.02,
+    "cuchillo": 0.03,
+    "knife": 0.03,
     "pistola": 0.02,
     "pistol": 0.02,
     "caidas": 0.02,

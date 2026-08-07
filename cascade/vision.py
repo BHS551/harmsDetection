@@ -23,8 +23,11 @@ PROMPT_MAP = {
                 "a human figure", "someone walking", "a person seen by a security camera",
                 "a person in the background of a room"],
     "person": ["a photo of a person", "a person standing", "a human figure", "someone walking"],
-    "cuchillo": ["a photo of a knife"],
-    "knife": ["a photo of a knife"],
+    # Hoja/metal (no "sostener"): +recall sin dispararse con objetos de mano.
+    "cuchillo": ["a photo of a knife", "a sharp knife blade", "a metal knife blade",
+                 "the blade of a knife", "a kitchen knife"],
+    "knife": ["a photo of a knife", "a sharp knife blade", "a metal knife blade",
+              "the blade of a knife", "a kitchen knife"],
 }
 
 DEFAULT_DISTRACTORS = [
@@ -33,7 +36,7 @@ DEFAULT_DISTRACTORS = [
 ]  # nota: sin "food on a table" (colisionaba con cuchillos de cocina)
 
 DEFAULT_PROMPT_THRESHOLDS = {
-    "persona": 0.03, "person": 0.03, "cuchillo": 0.02, "knife": 0.02,
+    "persona": 0.03, "person": 0.03, "cuchillo": 0.03, "knife": 0.03,
     "pistola": 0.02, "pistol": 0.02, "caidas": 0.02, "robos": 0.02, "violencia": 0.02,
 }
 
