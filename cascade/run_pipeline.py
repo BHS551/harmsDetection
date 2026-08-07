@@ -74,8 +74,17 @@ def run_local(ctx):
     if not rtsp:
         terminate_self("Sin fuente RTSP en el contexto")
         return
+    # Modo ráfaga, el mismo control de caudal que ya usa el motion box: un evento de
+    # movimiento emite `burst_frames` candidatos y luego calla `burst_cooldown` s.
+    # Sin estos parámetros run_motion cae al modo ventana, que emite un candidato
+    # cada 0.4 s mientras haya movimiento y re-arma la ventana en cada frame, así que
+    # una escena transitada no la cierra nunca (medido: ~5000 alertas/hora/cámara).
     tiers.run_motion(tiers.frames_from_rtsp(rtsp), candidate_q, meta,
-                     distributed=False, window_seconds=float(ctx.get("detection_window_seconds", 60)))
+                     distributed=False,
+                     window_seconds=float(ctx.get("detection_window_seconds", 60)),
+                     burst_frames=int(ctx.get("burst_frames", 10)),
+                     burst_span=float(ctx.get("burst_span", 3.0)),
+                     burst_cooldown=float(ctx.get("burst_cooldown", 15.0)))
 
 
 def run_tier(which, ctx):

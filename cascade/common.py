@@ -7,6 +7,7 @@ import os
 import time
 import json
 import uuid
+import threading
 import http.client
 import urllib.request
 import boto3
@@ -22,6 +23,32 @@ HEIMDAL_MANAGER_PATH = os.environ.get("HEIMDAL_MANAGER_PATH", "/default/heimdalM
 INTERNAL_SECRET = os.environ.get("HEIMDALL_INTERNAL_SECRET", "")
 
 _s3 = boto3.client("s3", region_name="us-east-1")
+
+# Supresión de alertas repetidas. Cada candidato que confirman CLIP o el VLM escribe
+# un frame en S3, un item en DynamoDB y dispara SMS + email; ante una escena con
+# movimiento sostenido eso son miles de eventos por hora sobre la MISMA persona.
+# Se suprime por (cámara, etiqueta): mientras la amenaza persista se re-alerta cada
+# ALERT_COOLDOWN s —misma semántica que el REALERT_INTERVAL del monolito— y se avisa
+# al usuario como mucho cada NOTIFY_COOLDOWN s, porque el SMS es el canal caro.
+# Esto es la segunda línea de defensa: la primera es el modo ráfaga de la capa 0,
+# pero raise_alert la comparten también las cajas distribuidas.
+ALERT_COOLDOWN = float(os.environ.get("HEIMDALL_ALERT_COOLDOWN", "20"))
+NOTIFY_COOLDOWN = float(os.environ.get("HEIMDALL_NOTIFY_COOLDOWN", "300"))
+
+_cooldown_lock = threading.Lock()
+_last_alert = {}
+_last_notify = {}
+
+
+def _should_fire(store, key, cooldown):
+    """True si toca disparar, registrando el instante. raise_alert corre en un pool
+    de 4 hilos, así que la comprobación y la marca van bajo el mismo lock."""
+    now = time.time()
+    with _cooldown_lock:
+        if now - store.get(key, 0.0) < cooldown:
+            return False
+        store[key] = now
+        return True
 
 try:
     from firebase_auth import get_firebase_token
@@ -124,6 +151,10 @@ def raise_alert(jpg_bytes, meta, score, coords, label, source):
     """S3 + storeRegister + notificación. `source` etiqueta la capa que confirmó
     (p. ej. 'clip' o 'vlm') para trazabilidad. No bloquea (llamar en hilo)."""
     try:
+        camera = meta.get("camera_name", "entrance")
+        key = (camera, label)
+        if not _should_fire(_last_alert, key, ALERT_COOLDOWN):
+            return None
         detection_id = str(uuid.uuid4())
         image_key = upload_frame_to_s3(jpg_bytes, meta.get("ts", time.time()), score, coords, detection_id)
         store_register({
@@ -136,8 +167,14 @@ def raise_alert(jpg_bytes, meta, score, coords, label, source):
             "owner_uid": meta.get("owner_uid", ""),
             "confirmed_by": source,
         })
-        notify_user(meta.get("owner_uid", ""), label, meta.get("camera_name", "entrance"), score, detection_id)
-        print(f"ALERTA [{source}] {label} score={score:.3f} -> {image_key}")
+        # La detección queda registrada siempre; el aviso al usuario va con su propio
+        # cooldown, más largo, para no convertir una escena transitada en cientos de
+        # SMS. El historial de la consola sigue mostrando todos los eventos.
+        notified = _should_fire(_last_notify, key, NOTIFY_COOLDOWN)
+        if notified:
+            notify_user(meta.get("owner_uid", ""), label, camera, score, detection_id)
+        print(f"ALERTA [{source}] {label} score={score:.3f} "
+              f"notificado={'si' if notified else 'no'} -> {image_key}")
         return detection_id
     except Exception as e:
         print("raise_alert error:", e)
