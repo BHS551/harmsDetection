@@ -44,6 +44,11 @@ DEFAULT_PROMPT_THRESHOLDS = {
 # estática producen falsos positivos que se solapan con los verdaderos.
 MOTION_ONLY_LABELS = {"caidas", "robos", "violencia", "persona", "person"}
 
+# Universo de conceptos que la caja de análisis COMPARTIDA puntúa siempre. Como una
+# sola caja sirve a muchas cámaras (cada una con su propia blacklist), carga todos los
+# prompts una vez y luego cada candidato se filtra a los conceptos de su cámara.
+UNIVERSAL_CONCEPTS = ["persona", "cuchillo", "caidas", "robos", "violencia"]
+
 # Distractores que colisionan con un concepto-objetivo (no restarlo a sí mismo).
 CONFLICTING_DISTRACTORS = {
     "persona": {"a person standing normally", "a photo of a hand"},

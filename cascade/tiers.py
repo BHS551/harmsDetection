@@ -21,16 +21,36 @@ from transport import pack_frame, load_frame, cleanup_frame
 ABSTRACT_EVENTS = {"caidas", "robos", "violencia"}
 
 
-def frames_from_rtsp(rtsp_url):
-    """Generador de frames BGR desde RTSP (usa las opciones TCP/ngrok del worker)."""
+def frames_from_rtsp(rtsp_url, fatal_on_fail=True, label=""):
+    """Generador de frames BGR desde RTSP (usa las opciones TCP/ngrok del worker).
+
+    fatal_on_fail: en el modo de UNA cámara por instancia, si el RTSP no conecta al
+    arrancar la instancia sobra -> se auto-termina. En el motion box MULTI-cámara eso
+    NO aplica: una cámara caída no debe tumbar la caja (las demás siguen), así que se
+    reintenta la reconexión sin terminar el proceso."""
     import os
     os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
         "rtsp_transport;tcp|stimeout;5000000|analyzeduration;1000000|probesize;1000000|max_delay;500000")
-    cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+    def _open():
+        c = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+        c.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        return c
+
+    cap = _open()
     if not cap.isOpened():
-        common.terminate_self("RTSP inalcanzable en el arranque")
-        return
+        if fatal_on_fail:
+            common.terminate_self("RTSP inalcanzable en el arranque")
+            return
+        # multi-cámara: seguir reintentando en caliente sin matar la caja
+        for _ in range(30):
+            time.sleep(4)
+            cap = _open()
+            if cap.isOpened():
+                break
+        else:
+            print(f"[motion] cámara {label} sin conexión RTSP, hilo termina (la caja sigue)")
+            return
     fails = 0
     while True:
         ok, frame = cap.read()
@@ -38,20 +58,68 @@ def frames_from_rtsp(rtsp_url):
             fails += 1
             if fails > 30:
                 cap.release(); time.sleep(2)
-                cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG); cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                cap = _open()
                 fails = 0
             time.sleep(0.05); continue
         fails = 0
         yield frame
 
 
+def _emit(out_queue, meta, frame, rois, distributed):
+    ok, buf = cv2.imencode(".jpg", frame)
+    if not ok:
+        return False
+    msg = {**meta, "ts": time.time(), "rois": [list(r) for r in rois]}
+    msg.update(pack_frame(buf.tobytes(), distributed))
+    out_queue.send(msg)
+    return True
+
+
 def run_motion(source, out_queue, meta, distributed=False, window_seconds=60.0,
-               emit_interval=0.4, stop_event=None):
-    """Capa 0. `source` es un iterable de frames BGR. Emite candidatos a out_queue,
-    como mucho uno cada `emit_interval` s (no inunda a la capa 1)."""
+               emit_interval=0.4, stop_event=None,
+               burst_frames=0, burst_span=3.0, burst_cooldown=15.0):
+    """Capa 0. `source` es un iterable de frames BGR. Dos modos de emisión:
+
+    - VENTANA (por defecto, `burst_frames=0`): mientras haya movimiento, emite un
+      candidato cada `emit_interval` s dentro de una ventana de `window_seconds` que se
+      re-arma con cada movimiento. Es el modo del worker "todo-en-uno" (local).
+
+    - RÁFAGA (`burst_frames>0`): al detectar movimiento captura hasta `burst_frames`
+      frames repartidos en ~`burst_span` s y luego queda en silencio `burst_cooldown` s
+      antes de poder disparar otra ráfaga (aunque el movimiento continúe). Es el modo
+      del motion box barato: manda ~10 frames por evento a la capa CLIP y no la inunda.
+    """
     md = MotionDetector()
-    active_until = 0.0
     last_hb = 0.0
+
+    if burst_frames > 0:
+        per = max(0.05, burst_span / burst_frames)   # separación entre frames de la ráfaga
+        remaining = 0
+        last_emit = 0.0
+        last_burst_end = -1e9
+        for frame in source:
+            if stop_event is not None and stop_event.is_set():
+                break
+            now = time.time()
+            if now - last_hb > 30:
+                common.heartbeat(meta.get("device_id", ""), meta.get("owner_uid", ""), meta.get("camera_name", ""))
+                last_hb = now
+            rois = md.rois(frame)
+            if not rois:
+                continue
+            if remaining == 0 and (now - last_burst_end) >= burst_cooldown:
+                remaining = burst_frames          # nuevo evento -> arma la ráfaga
+                last_emit = 0.0
+            if remaining > 0 and (now - last_emit) >= per:
+                if _emit(out_queue, meta, frame, rois, distributed):
+                    last_emit = now
+                    remaining -= 1
+                    if remaining == 0:
+                        last_burst_end = now       # arranca el enfriamiento
+        return
+
+    # --- modo ventana ---
+    active_until = 0.0
     last_emit = 0.0
     for frame in source:
         if stop_event is not None and stop_event.is_set():
@@ -64,20 +132,74 @@ def run_motion(source, out_queue, meta, distributed=False, window_seconds=60.0,
         if rois:
             active_until = now + window_seconds  # cada movimiento re-arma la ventana
         if now <= active_until and rois and (now - last_emit) >= emit_interval:
-            ok, buf = cv2.imencode(".jpg", frame)
-            if not ok:
-                continue
-            last_emit = now
-            msg = {**meta, "ts": now, "rois": [list(r) for r in rois]}
-            msg.update(pack_frame(buf.tobytes(), distributed))
-            out_queue.send(msg)
+            if _emit(out_queue, meta, frame, rois, distributed):
+                last_emit = now
+
+
+def run_motion_multi(cameras, out_queue, distributed=True, stop_event=None,
+                     burst_frames=10, burst_span=3.0, burst_cooldown=15.0,
+                     wake_hook=None):
+    """Capa 0 EMPAQUETADA: corre la detección de movimiento de VARIAS cámaras en un
+    solo proceso (el motion box barato 24/7). Una hebra por cámara, todas compartiendo
+    la misma `out_queue` (SQS). `cameras` = lista de dicts {"rtsp": url, "meta": {...}}.
+
+    `wake_hook` (opcional): callable que se invoca justo antes de encolar un candidato,
+    para despertar la caja de análisis si estuviera apagada. Debe ser barato/idempotente
+    (el hilo de cada cámara lo llama; la implementación debe hacer su propio debounce).
+    """
+    import threading
+
+    def _cam_loop(cam):
+        src = frames_from_rtsp(cam["rtsp"], fatal_on_fail=False,
+                               label=cam["meta"].get("camera_name", ""))
+        sink = out_queue
+        if wake_hook is not None:
+            sink = _WakingQueue(out_queue, wake_hook)
+        try:
+            run_motion(src, sink, cam["meta"], distributed=distributed, stop_event=stop_event,
+                       burst_frames=burst_frames, burst_span=burst_span, burst_cooldown=burst_cooldown)
+        except Exception as e:
+            print(f"[motion] cámara {cam['meta'].get('camera_name','')} error: {e}")
+
+    threads = []
+    for cam in cameras:
+        t = threading.Thread(target=_cam_loop, args=(cam,), daemon=True,
+                             name=f"motion-{cam['meta'].get('camera_name','?')}")
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join()
+
+
+class _WakingQueue:
+    """Envuelve una cola: dispara `wake_hook` antes de cada envío (para levantar la
+    caja de análisis) y luego delega. El debounce vive dentro del hook."""
+    def __init__(self, inner, wake_hook):
+        self._inner = inner
+        self._wake = wake_hook
+
+    def send(self, msg):
+        try:
+            self._wake()
+        except Exception as e:
+            print("[motion] wake_hook error:", e)
+        self._inner.send(msg)
 
 
 def run_clip(in_queue, vlm_queue, scorer, distributed=False, stop_event=None,
-             clear_margin=0.15, alert_pool=None):
-    """Capa 1. Consume candidatos, puntúa, decide clear/ambiguous/none."""
+             clear_margin=0.15, alert_pool=None, activity=None):
+    """Capa 1. Consume candidatos, puntúa, decide clear/ambiguous/none.
+
+    `activity`: dict opcional {"last": ts} que se sella con la hora en cada lote recibido;
+    lo lee el watchdog de inactividad de la caja de análisis para apagarse tras 2h.
+    Si un mensaje trae `blacklist` (conceptos de ESA cámara), solo se aceptan labels de
+    esa lista: la caja es compartida y puntúa el universo de conceptos, pero cada cámara
+    filtra a los suyos."""
     while stop_event is None or not stop_event.is_set():
-        for msg in in_queue.receive(wait=5):
+        batch = in_queue.receive(wait=5)
+        if batch and activity is not None:
+            activity["last"] = time.time()
+        for msg in batch:
             decision = "none"
             try:
                 jpg = load_frame(msg)
@@ -86,8 +208,12 @@ def run_clip(in_queue, vlm_queue, scorer, distributed=False, stop_event=None,
                 frame = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
                 rois = [tuple(r) for r in msg.get("rois", [])]
                 score, label, coords = scorer.score(frame, rois)
+                cam_bl = msg.get("blacklist")
+                allowed = None if not cam_bl else {normalize_word(b) for b in cam_bl}
                 if label is None or score < scorer.threshold_for(label):
                     decision = "none"
+                elif allowed is not None and normalize_word(label) not in allowed:
+                    decision = "none"   # concepto no monitoreado por esta cámara
                 elif normalize_word(label) in ABSTRACT_EVENTS or score < clear_margin:
                     decision = "ambiguous"
                 else:

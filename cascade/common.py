@@ -15,6 +15,10 @@ S3_BUCKET = "detection-frames-tests"
 S3_PREFIX = "cameras/"
 WORKER_EVENTS_HOST = os.environ.get("WORKER_EVENTS_HOST", "p4nojr0ec5.execute-api.us-east-1.amazonaws.com")
 STORE_REGISTER_HOST = os.environ.get("STORE_REGISTER_HOST", "c038gkbfm8.execute-api.us-east-1.amazonaws.com")
+HEIMDAL_MANAGER_HOST = os.environ.get("HEIMDAL_MANAGER_HOST", "a2ukt8vyhb.execute-api.us-east-1.amazonaws.com")
+# Secreto compartido para que el motion box invoque el "ensureAnalysis" de
+# HeimdalManager sin token de usuario (autenticación máquina-a-máquina).
+INTERNAL_SECRET = os.environ.get("HEIMDALL_INTERNAL_SECRET", "")
 
 _s3 = boto3.client("s3", region_name="us-east-1")
 
@@ -91,6 +95,28 @@ def heartbeat(device_id, owner_uid, camera_name, status="running"):
                            "camera_name": camera_name, "status": status})
     except Exception as e:
         print("heartbeat error:", e)
+
+
+_last_wake = {"t": 0.0}
+_WAKE_DEBOUNCE = 30.0  # como mucho una llamada de "despierta" cada 30 s (todas las cámaras)
+
+
+def ensure_analysis():
+    """Despierta la caja de análisis (CLIP+VLM) si estuviera apagada. La llama el
+    motion box antes de encolar un candidato. Idempotente y con debounce: HeimdalManager
+    no arranca una segunda caja si ya hay una viva. Falla en silencio (no debe tumbar
+    la detección de movimiento)."""
+    now = time.time()
+    if now - _last_wake["t"] < _WAKE_DEBOUNCE:
+        return
+    _last_wake["t"] = now
+    try:
+        conn = http.client.HTTPSConnection(HEIMDAL_MANAGER_HOST, timeout=8)
+        conn.request("POST", "/", json.dumps({"action": "ensureAnalysis"}),
+                     {"Content-Type": "application/json", "x-internal-secret": INTERNAL_SECRET})
+        res = conn.getresponse(); res.read(); conn.close()
+    except Exception as e:
+        print("ensure_analysis error:", e)
 
 
 def raise_alert(jpg_bytes, meta, score, coords, label, source):
