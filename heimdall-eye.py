@@ -3,13 +3,13 @@ import time
 import os
 import re
 import sys
+import threading
 import unicodedata
+import urllib.request
 from collections import deque
 from PIL import Image
 import torch
 import clip
-from twilio.rest import Client
-import numpy as np
 import concurrent.futures
 import http.client
 import json
@@ -24,41 +24,82 @@ with open(context_path, "r", encoding="utf-8") as f:
 print(data)
 print(type(data))
 
-# === Twilio configuration ===
-account_sid = ""
-auth_token = ""
-twilio_phone = "+18164767447"
-recipient_phone = "+573043566310"
-
 # === S3 Configuration ===
 S3_BUCKET_NAME = "detection-frames-tests"
 S3_PREFIX = "cameras/"
-client = Client(account_sid, auth_token)
 
-s3_client = boto3.client(
-    "s3",
-    region_name="us-east-1",
+s3_client = boto3.client("s3", region_name="us-east-1")
+secrets_client = boto3.client("secretsmanager", region_name="us-east-1")
+
+# Endpoint de eventos del worker (heartbeat + notificación al usuario).
+WORKER_EVENTS_HOST = os.environ.get(
+    "WORKER_EVENTS_HOST", "p4nojr0ec5.execute-api.us-east-1.amazonaws.com"
 )
 
-# === Runtime tuning (override via env vars without touching code) ===
+# Región e id de esta instancia EC2 (para auto-terminarse si la cámara no conecta).
+def get_instance_id():
+    try:
+        # IMDSv2
+        token = urllib.request.urlopen(
+            urllib.request.Request(
+                "http://169.254.169.254/latest/api/token",
+                method="PUT",
+                headers={"X-aws-ec2-metadata-token-ttl-seconds": "60"},
+            ),
+            timeout=2,
+        ).read().decode()
+        req = urllib.request.Request(
+            "http://169.254.169.254/latest/meta-data/instance-id",
+            headers={"X-aws-ec2-metadata-token": token},
+        )
+        return urllib.request.urlopen(req, timeout=2).read().decode()
+    except Exception:
+        return None
+
+# === Runtime tuning ===
+# Cada parámetro se puede sobreescribir por cámara desde context.json (lo envía
+# la UI/heimdalManager) o por variable de entorno; si no, usa el default.
+def tune(ctx_key, env_key, default, cast=float):
+    if isinstance(data, dict) and ctx_key in data and data[ctx_key] is not None:
+        return cast(data[ctx_key])
+    return cast(os.environ.get(env_key, default))
+
 # Live debug windows: OFF by default so headless/EC2 hosts don't crash on cv2.imshow.
 SHOW_WINDOWS = 0
 # Max detections-per-second we actually run CLIP on (time-based, FPS-independent).
-MIN_DETECTION_INTERVAL = float(os.environ.get("HEIMDALL_MIN_INTERVAL", "0.4"))
+MIN_DETECTION_INTERVAL = tune("min_interval", "HEIMDALL_MIN_INTERVAL", "0.4", float)
 # Consecutive positive frames required before firing an alert (debounces false positives).
-ALERT_THRESHOLD = int(os.environ.get("HEIMDALL_ALERT_THRESHOLD", "3"))
+ALERT_THRESHOLD = tune("alert_threshold", "HEIMDALL_ALERT_THRESHOLD", "3", int)
 # Minimum seconds between two alerts for the same camera (avoids spamming S3/API).
-ALERT_COOLDOWN = float(os.environ.get("HEIMDALL_ALERT_COOLDOWN", "10"))
+ALERT_COOLDOWN = tune("alert_cooldown", "HEIMDALL_ALERT_COOLDOWN", "10", float)
+# Re-alerta en amenaza PERSISTENTE: mientras un objeto/persona siga detectándose,
+# se vuelve a avisar cada este intervalo (segundos), en vez de una sola vez. Útil
+# para casos como "alguien parado con un cuchillo" (no basta con avisar una vez).
+REALERT_INTERVAL = tune("realert_interval", "HEIMDALL_REALERT_INTERVAL", "20", float)
 # Frames to let the background model warm up before trusting motion (skips alerts).
-WARMUP_FRAMES = int(os.environ.get("HEIMDALL_WARMUP_FRAMES", "30"))
-# CLIP cosine-similarity threshold for a positive match.
-DETECTION_THRESHOLD = float(os.environ.get("HEIMDALL_THRESHOLD", "0.27"))
+WARMUP_FRAMES = tune("warmup_frames", "HEIMDALL_WARMUP_FRAMES", "30", int)
+# Umbral del MARGEN contrastivo (concepto − mejor distractor) para un positivo.
+# Antes era similitud coseno absoluta (0.27); con el score contrastivo el número
+# es un margen pequeño. Default bajo = prioriza recall (no perder amenazas); la
+# validación temporal (ALERT_THRESHOLD frames seguidos) filtra las falsas alarmas.
+DETECTION_THRESHOLD = tune("threshold", "HEIMDALL_THRESHOLD", "0.02", float)
 # Motion detection runs on a downscaled frame for speed; ROIs are scaled back up.
 MOTION_DOWNSCALE = 0.5
 # Minimum contour area (in downscaled pixels) to count as real motion.
 MIN_MOTION_AREA = 500
 # Cap ROIs per frame so a noisy scene can't blow up the CLIP batch.
 MAX_ROIS = 10
+# Region proposal (validado offline sobre imágenes reales de Sohas): la ganancia
+# viene de CUADRAR la caja de movimiento y garantizar un lado mínimo, NO de añadir
+# contexto. Barrido medido (recall @umbral fijo): crudo 88% / pequeños 77%  ->
+# solo-min-size 93% / pequeños 87%  ->  con padding 0.4 baja a 80% / 64% (el
+# contexto extra diluye el objeto y hunde el score contrastivo). Por eso el padding
+# default es 0.0: solo cuadramos y forzamos tamaño mínimo. Configurable por cámara.
+ROI_PADDING = tune("roi_padding", "HEIMDALL_ROI_PADDING", "0.0", float)
+# Lado mínimo del recorte (px, resolución completa) para que el upscale a 224 no
+# quede borroso. Cajas de movimiento diminutas se expanden hasta este tamaño; es
+# lo que recupera los objetos pequeños (<1% del frame), la debilidad medida.
+MIN_ROI_SIZE = tune("min_roi_size", "HEIMDALL_MIN_ROI_SIZE", "96", int)
 # Tolerate this many consecutive failed reads (jittery ngrok/RTSP) before reconnecting.
 # A single dropped read is normal; reconnecting on every one just thrashes the tunnel.
 MAX_READ_FAILURES = int(os.environ.get("HEIMDALL_MAX_READ_FAILURES", "30"))
@@ -66,19 +107,16 @@ MAX_READ_FAILURES = int(os.environ.get("HEIMDALL_MAX_READ_FAILURES", "30"))
 # decodes from a keyframe and TP-Link GOPs are long, so the first frame can lag a few
 # seconds — wait it out instead of tearing down and re-handshaking.
 RTSP_OPEN_TIMEOUT = float(os.environ.get("HEIMDALL_OPEN_TIMEOUT", "12"))
-# Safety net: even with zero motion, run a FULL-frame sliding-window scan this often
-# (seconds). Motion-gating alone would miss a stationary target (knife on a table, a
-# person standing still) once MOG2 learns it into the background. 0 disables the sweep.
-FULL_SCAN_INTERVAL = float(os.environ.get("HEIMDALL_FULL_SCAN_INTERVAL", "3"))
+# EL MOVIMIENTO ES LA PRIMERA CAPA. La detección está APAGADA hasta que MOG2 detecta
+# movimiento; cada movimiento abre/RE-ARMA una VENTANA de detección de esta duración
+# (SEGUNDOS, independiente de los FPS) en la que se corre CLIP sobre la zona del
+# movimiento. La ventana se apaga cuando transcurre este tiempo desde el ÚLTIMO
+# movimiento. (Se eliminó el barrido periódico sobre escena estática: fabricaba falsas
+# alarmas —casco->persona, barrotes->robo—. Un objeto totalmente inmóvil ya no se
+# detecta, por diseño: si no hay movimiento, no hay nada que un vigilante consideraría.)
+DETECTION_WINDOW_SECONDS = tune("detection_window_seconds", "HEIMDALL_DETECTION_WINDOW_SEC", "60", float)
 
 
-def send_sms_alert(message_body):
-    message = client.messages.create(
-        body=message_body,
-        from_=twilio_phone,
-        to=recipient_phone
-    )
-    print("SMS sent:", message.sid)
 
 def mask_rtsp_url(url):
     return re.sub(r":([^:@/]+)@", ":****@", url)
@@ -121,8 +159,22 @@ def open_rtsp_capture(url, retries=5, delay_sec=2):
     return None
 
 # === Camera and Detection Configuration ===
-rtsp_url = data['rtsp_path']
+# La URL RTSP (con credenciales) se obtiene de Secrets Manager por referencia
+# (rtsp_secret_id); así no viaja en el UserData ni queda en claro en el disco.
+# Se mantiene compatibilidad con context.json que traiga rtsp_path directo.
+def resolve_rtsp_url(ctx):
+    if ctx.get("rtsp_path"):
+        return ctx["rtsp_path"]
+    secret_id = ctx.get("rtsp_secret_id")
+    if secret_id:
+        return secrets_client.get_secret_value(SecretId=secret_id)["SecretString"]
+    return None
+
+rtsp_url = resolve_rtsp_url(data)
+if not rtsp_url:
+    raise Exception("No RTSP source in context (rtsp_path o rtsp_secret_id)")
 owner_uid = data.get('owner_uid', '')
+device_id = str(data.get('instance_id') or data.get('device_id') or '')
 
 # Prohibited items to detect come from the context blacklist (e.g. ["knife"]).
 detection_blacklist = data.get("detection_blacklist") or ["person"]
@@ -151,8 +203,13 @@ PROMPT_MAP = {
     ],
     "persona": ["a photo of a person"],
     "person": ["a photo of a person"],
-    "cuchillo": ["a photo of a knife"],
-    "knife": ["a photo of a knife"],
+    # Prompts centrados en la HOJA/metal (no en "sostener"), para subir el recall del
+    # cuchillo SIN dispararse con objetos de mano (teléfono/billetera comparten el
+    # contexto "en mano", pero no la hoja metálica). Medido: recall 48%->65% a 10% FA.
+    "cuchillo": ["a photo of a knife", "a sharp knife blade", "a metal knife blade",
+                 "the blade of a knife", "a kitchen knife"],
+    "knife": ["a photo of a knife", "a sharp knife blade", "a metal knife blade",
+              "the blade of a knife", "a kitchen knife"],
 }
 
 
@@ -163,6 +220,34 @@ def normalize_word(word):
         c for c in unicodedata.normalize("NFD", word)
         if unicodedata.category(c) != "Mn"
     )
+
+
+# Umbral por concepto, ahora sobre el MARGEN contrastivo (no similitud absoluta).
+# Valores bajos = prioriza recall. Sobreescribible desde context.json con
+# "thresholds": { "caidas": 0.03, ... }. Fallback: DETECTION_THRESHOLD.
+DEFAULT_PROMPT_THRESHOLDS = {
+    "persona": 0.03,
+    "person": 0.03,
+    "cuchillo": 0.03,
+    "knife": 0.03,
+    "pistola": 0.02,
+    "pistol": 0.02,
+    "caidas": 0.02,
+    "robos": 0.02,
+    "violencia": 0.02,
+}
+_ctx_thresholds = data.get("thresholds") if isinstance(data, dict) else None
+if isinstance(_ctx_thresholds, dict):
+    for k, v in _ctx_thresholds.items():
+        try:
+            DEFAULT_PROMPT_THRESHOLDS[normalize_word(k)] = float(v)
+        except (TypeError, ValueError):
+            pass
+
+
+def threshold_for(label):
+    """Umbral aplicable a la palabra ganadora (con fallback al global)."""
+    return DEFAULT_PROMPT_THRESHOLDS.get(normalize_word(label), DETECTION_THRESHOLD)
 
 
 # Empty/whitespace-only entries would become empty CLIP prompts that can still
@@ -194,13 +279,113 @@ with torch.no_grad():
     text_embeddings = model.encode_text(text_tokens)
     text_embeddings /= text_embeddings.norm(dim=-1, keepdim=True)
 
+# Con el gating por movimiento (ver DETECTION_WINDOW_SECONDS) TODOS los conceptos se
+# evalúan únicamente dentro de la ventana de movimiento. Ya no existe barrido sobre
+# escena estática —que era la fuente de falsas alarmas (casco->persona, barrotes->robo)—
+# así que no hace falta separar conceptos por tipo: el movimiento es el discriminador.
+print("Conceptos (evaluados SOLO con movimiento):", sorted(set(prompt_labels)))
+
+# Score contrastivo: en escena real, el score absoluto de CLIP sigue al CONTEXTO
+# (cocina/mesa/objeto-en-mano) casi tanto como al objeto, lo que dispara falsas
+# alarmas. Restar el mejor "distractor" (objeto/escena cotidiana) por parche
+# cancela ese sesgo. Validado en imágenes reales de armas vs objetos de mano:
+# falsas alarmas 78% -> 17% a igual recall. Configurable con context["distractor_prompts"].
+#
+# NOTA: se quitó "a photo of food on a table". Medido sobre cuchillos reales de
+# COCO (mayoría en cocina), ese distractor colisionaba con los positivos —el
+# cuchillo ESTÁ sobre una mesa con comida— y hundía el margen: AUC 0.465 (peor que
+# azar) con él vs 0.739 sin él; recall en cocina 10% -> 24% a igual tasa de falsas
+# alarmas. Como la prioridad es no perder amenazas, se elimina.
+DEFAULT_DISTRACTORS = [
+    "a photo of a smartphone",
+    "a photo of a wallet",
+    "a photo of a hand",
+    "a person standing normally",
+    "an empty room",
+    "furniture",
+]
+_ctx_distractors = data.get("distractor_prompts") if isinstance(data, dict) else None
+distractor_prompts = _ctx_distractors if (isinstance(_ctx_distractors, list) and _ctx_distractors) else DEFAULT_DISTRACTORS
+
+# Distractores CONSCIENTES del concepto: si el usuario quiere detectar "persona",
+# restar "a person standing normally"/"a photo of a hand" cancela el propio objetivo
+# (el margen contrastivo se hunde y NUNCA detecta personas). Medido sobre imágenes con
+# personas: con esos distractores detecta 4/35; sin ellos, 16/35. Se eliminan los
+# distractores que colisionan con algún concepto que el usuario SÍ quiere detectar.
+CONFLICTING_DISTRACTORS = {
+    "persona": {"a person standing normally", "a photo of a hand"},
+    "person": {"a person standing normally", "a photo of a hand"},
+}
+_active_targets = {normalize_word(w) for w in cleaned_blacklist}
+_drop_distractors = set()
+for _c in _active_targets:
+    _drop_distractors |= CONFLICTING_DISTRACTORS.get(_c, set())
+if _drop_distractors:
+    distractor_prompts = [d for d in distractor_prompts if d not in _drop_distractors]
+    print("Distractores eliminados por colisión con el objetivo:", sorted(_drop_distractors))
+
+distractor_tokens = clip.tokenize(distractor_prompts, truncate=True).to(device)
+with torch.no_grad():
+    distractor_embeddings = model.encode_text(distractor_tokens)
+    distractor_embeddings /= distractor_embeddings.norm(dim=-1, keepdim=True)
+print("Distractores (contraste):", distractor_prompts)
+
 # Stateful background subtractor for the cheap motion stage (main thread only).
 bg_subtractor = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16, detectShadows=True)
 motion_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 
 
+def pad_square_roi(box, w, h, pad=ROI_PADDING, min_size=MIN_ROI_SIZE):
+    """Cuadra la caja de movimiento y le garantiza un lado mínimo (así un objeto
+    pequeño se amplía limpio en vez de diluirse al reescalar a 224). Con pad=0 no
+    añade contexto (el contexto extra baja el score contrastivo). El recorte
+    cuadrado hace que el center-crop de CLIP deje fuera menos contenido. Recorta a
+    los límites del frame. Devuelve coords en resolución completa."""
+    x1, y1, x2, y2 = box
+    bw, bh = x2 - x1, y2 - y1
+    cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+    # medio-lado = mayor de: caja+padding, o el mínimo exigido.
+    half = max(bw * (1 + 2 * pad) / 2.0, bh * (1 + 2 * pad) / 2.0, min_size / 2.0)
+    nx1 = int(max(0, cx - half)); ny1 = int(max(0, cy - half))
+    nx2 = int(min(w, cx + half)); ny2 = int(min(h, cy + half))
+    return (nx1, ny1, nx2, ny2)
+
+
+def _iou(a, b):
+    ax1, ay1, ax2, ay2 = a; bx1, by1, bx2, by2 = b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+    inter = iw * ih
+    if inter == 0:
+        return 0.0
+    ua = (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - inter
+    return inter / ua if ua else 0.0
+
+
+def merge_boxes(boxes, iou_thr=0.3):
+    """Fusiona cajas solapadas para no fragmentar un mismo objeto en varios recortes
+    (cada fragmento perdería contexto y bajaría el score)."""
+    merged = []
+    for b in boxes:
+        placed = False
+        for i, m in enumerate(merged):
+            if _iou(b, m) > iou_thr:
+                merged[i] = (min(b[0], m[0]), min(b[1], m[1]),
+                             max(b[2], m[2]), max(b[3], m[3]))
+                placed = True
+                break
+        if not placed:
+            merged.append(b)
+    return merged
+
+
 def get_motion_rois(frame):
-    """Stage 1 (cheap): return bounding boxes of moving regions in full-res coords."""
+    """Stage 1 (cheap): return bounding boxes of moving regions in full-res coords.
+
+    Cada caja de movimiento se padea + cuadra + garantiza tamaño mínimo (region
+    proposal) y luego se fusionan las solapadas, de modo que CLIP recibe recortes
+    bien enmarcados en vez de cajas apretadas que diluyen los objetos pequeños."""
     small = cv2.resize(frame, None, fx=MOTION_DOWNSCALE, fy=MOTION_DOWNSCALE)
     mask = bg_subtractor.apply(small)
     # Drop MOG2 shadow pixels (value 127) and denoise.
@@ -220,9 +405,10 @@ def get_motion_rois(frame):
         x2 = min(w, int((x + bw) * inv))
         y2 = min(h, int((y + bh) * inv))
         rois.append((area, (x1, y1, x2, y2)))
-    # Keep the largest motion regions only.
+    # Keep the largest motion regions only, then frame them with context and merge.
     rois.sort(key=lambda r: r[0], reverse=True)
-    return [box for _, box in rois[:MAX_ROIS]]
+    boxes = [pad_square_roi(box, w, h) for _, box in rois[:MAX_ROIS]]
+    return merge_boxes(boxes)
 
 
 def sliding_window_rois(frame, patch_size=224, stride=192):
@@ -247,6 +433,13 @@ def sliding_window_rois(frame, patch_size=224, stride=192):
     return rois
 
 
+def multiscale_rois(frame):
+    """Barrido SAHI multiescala: dos tamaños de ventana para no perder objetos
+    pequeños (que a una sola escala quedan diluidos en el parche). Recupera
+    recall en escenas amplias donde el objeto ocupa ~1% del frame."""
+    return sliding_window_rois(frame, 256, 224) + sliding_window_rois(frame, 384, 320)
+
+
 def enhance_frame(frame):
     """CLAHE contrast enhancement in LAB space."""
     lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
@@ -257,11 +450,18 @@ def enhance_frame(frame):
     return cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
 
 
-def run_detection(frame, rois):
-    """Stage 2 (expensive): run CLIP only on the motion ROIs, batched.
+def run_detection(frame, rois, concept_embeddings=None, concept_labels=None):
+    """Stage 2 (expensive): run CLIP only on the given ROIs, batched.
+
+    concept_embeddings/concept_labels seleccionan QUÉ conceptos puntuar: en la ruta de
+    movimiento se usan todos; en el barrido estático solo los de objeto físico (para no
+    fabricar falsas alarmas con eventos abstractos). Por defecto usa todos (compat).
 
     Returns (enhanced_frame, best_score, detected, best_coords, best_label).
     """
+    if concept_embeddings is None:
+        concept_embeddings = text_embeddings
+        concept_labels = prompt_labels
     enhanced = enhance_frame(frame)
     image = Image.fromarray(cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB))
 
@@ -283,19 +483,28 @@ def run_detection(frame, rois):
     with torch.no_grad():
         patch_embeddings = model.encode_image(batch)
         patch_embeddings /= patch_embeddings.norm(dim=-1, keepdim=True)
-        # [num_patches, num_prompts] cosine similarities.
-        sims = patch_embeddings @ text_embeddings.T
+        # [parches, prompts] similitud con el concepto.
+        sims = patch_embeddings @ concept_embeddings.T
+        # [parches, distractores] similitud con objetos/escenas cotidianas.
+        dsims = patch_embeddings @ distractor_embeddings.T
+        # Score CONTRASTIVO: por cada parche, resta el mejor distractor. Así un
+        # cuchillo puntúa alto pero una cocina/celular/mesa (sin arma) no.
+        margins = sims - dsims.max(dim=1, keepdim=True).values
 
-    # Best (patch, prompt) pair across the whole batch.
-    flat_idx = int(torch.argmax(sims).item())
-    num_prompts = sims.shape[1]
+    # Mejor par (parche, prompt) por MARGEN contrastivo.
+    flat_idx = int(torch.argmax(margins).item())
+    num_prompts = margins.shape[1]
     patch_idx = flat_idx // num_prompts
     prompt_idx = flat_idx % num_prompts
-    best_score = float(sims[patch_idx, prompt_idx].item())
+    best_score = float(margins[patch_idx, prompt_idx].item())   # margen (confianza)
+    best_sim = float(sims[patch_idx, prompt_idx].item())        # sim cruda (para log)
     best_coords = coords_list[patch_idx]
     # Report the user's word for the winning prompt, not the internal English prompt.
-    best_label = prompt_labels[prompt_idx]
-    detected = best_score > DETECTION_THRESHOLD
+    best_label = concept_labels[prompt_idx]
+    # Umbral específico del concepto ganador, aplicado sobre el margen.
+    detected = best_score > threshold_for(best_label)
+    if detected:
+        print(f"  match {best_label}: margen {best_score:.3f} (sim {best_sim:.3f})")
     return enhanced, best_score, detected, best_coords, best_label
 
 
@@ -320,7 +529,10 @@ def reinitialize_capture():
     time.sleep(2)
     cap = open_rtsp_capture(rtsp_url, retries=3, delay_sec=2)
     if cap is None:
-        raise Exception(f"Failed to reconnect RTSP stream: {mask_rtsp_url(rtsp_url)}")
+        # La cámara cayó de forma persistente: auto-terminar en vez de reintentar
+        # para siempre gastando la instancia.
+        terminate_self("RTSP inalcanzable tras reconexión")
+        sys.exit(1)
 
 def storeRegister(data):
     token = get_firebase_token()
@@ -338,6 +550,64 @@ def storeRegister(data):
     print("Status:", res.status)
     response_data = res.read()
     print(response_data.decode("utf-8"))
+
+
+def post_worker_event(payload):
+    """POST autenticado al Lambda workerEvents (heartbeat / notify)."""
+    token = get_firebase_token()
+    conn = http.client.HTTPSConnection(WORKER_EVENTS_HOST, timeout=10)
+    conn.request(
+        "POST", "/", json.dumps(payload),
+        {"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+    )
+    res = conn.getresponse()
+    res.read()
+    return res.status
+
+
+def notify_user(event_type, camera, score, detection_id):
+    """Avisa al usuario por los canales que configuró (SMS/email)."""
+    try:
+        post_worker_event({
+            "action": "notify",
+            "owner_uid": owner_uid,
+            "event_type": event_type,
+            "camera": camera,
+            "cosine_sim": round(float(score), 3),
+            "detection_id": detection_id,
+        })
+    except Exception as e:
+        print("notify_user error:", e)
+
+
+def terminate_self(reason):
+    """Auto-termina esta instancia EC2 (la cámara no conecta -> no seguir facturando)."""
+    print(f"Auto-terminando la instancia: {reason}")
+    iid = get_instance_id()
+    if not iid:
+        # Sin IMDS (p.ej. entorno local): salir para que el supervisor no reintente en vano.
+        os._exit(3)
+    try:
+        boto3.client("ec2", region_name="us-east-1").terminate_instances(InstanceIds=[iid])
+    except Exception as e:
+        print("terminate_self error:", e)
+        os._exit(3)
+
+
+def heartbeat_loop():
+    """Reporta 'vivo' cada 30s para que la consola muestre el estado real."""
+    while True:
+        try:
+            post_worker_event({
+                "action": "heartbeat",
+                "device_id": device_id,
+                "owner_uid": owner_uid,
+                "camera_name": data.get("camera_name", ""),
+                "status": "running",
+            })
+        except Exception as e:
+            print("heartbeat error:", e)
+        time.sleep(30)
 
 def upload_frame_to_s3(frame, ts, detection_score, coords=None, detection_id=None):
     timestr = time.strftime('%Y-%m-%d_%H-%M-%S', time.localtime(ts))
@@ -382,18 +652,26 @@ def handle_alert(frame, ts, score, coords, label):
             "image_key": image_key,
             "owner_uid": owner_uid,
         })
+        # Avisar al usuario por su canal configurado (email/SMS).
+        notify_user(label, data.get('camera_name', 'entrance'), score, detection_id)
     except Exception as e:
         print("Alert handler error:", e)
 
 
+# Heartbeat en segundo plano (daemon): la consola ve el estado real del worker.
+threading.Thread(target=heartbeat_loop, daemon=True).start()
+
 # Open the RTSP stream
 cap = open_rtsp_capture(rtsp_url)
 if cap is None:
-    raise Exception(
+    # La cámara no conecta: no dejar la instancia encendida facturando sin hacer
+    # nada. Se auto-termina en vez de morir y quedar colgada.
+    print(
         f"Failed to open RTSP stream: {mask_rtsp_url(rtsp_url)}. "
-        "Check that the ngrok tunnel is running, the port matches context.json, "
-        "and ffmpeg is installed on the host (apt install ffmpeg)."
+        "Revisa el túnel/puerto y que ffmpeg esté instalado."
     )
+    terminate_self("RTSP inalcanzable en el arranque")
+    sys.exit(1)
 
 print("Processing frames from RTSP stream...")
 
@@ -409,11 +687,11 @@ processed_counter = 0
 read_failures = 0   # consecutive failed reads; reconnect only after MAX_READ_FAILURES
 last_second_time = time.time()
 last_detection_time = 0.0
-last_full_scan = 0.0   # 0 => a full sweep is due immediately on the first frame
-last_alert_time = 0.0
+active_until_time = 0.0        # detección ACTIVA mientras frame_time <= este instante
+last_alert_time = 0.0          # última alerta emitida (para re-alertar cada REALERT_INTERVAL)
+last_motion_rois = None        # última zona de movimiento (se re-puntúa durante la ventana)
 consecutive_detection_count = 0
 cosine_history = deque(maxlen=30)   # bounded: no unbounded growth / GC churn
-patch_history = deque(maxlen=30)
 last_annotated = None  # most recent detection overlay, kept for continuous display
 
 try:
@@ -452,7 +730,6 @@ try:
             processed_counter += 1
 
             cosine_history.append((score, det_ts))
-            patch_history.append((score, det_ts, coords, label, detected))
             print(f"[{format_full_time(det_ts)}] score: {score:.3f} | "
                   f"match: {label} | detected: {detected}")
 
@@ -460,8 +737,12 @@ try:
             if detected and warmed_up:
                 consecutive_detection_count += 1
                 print("Consecutive detections:", consecutive_detection_count)
+                # Re-alerta en amenaza PERSISTENTE: tras ALERT_THRESHOLD frames positivos
+                # seguidos se avisa, y se VUELVE a avisar cada REALERT_INTERVAL mientras la
+                # amenaza siga presente (no una sola vez por ventana). Así "alguien parado
+                # con un cuchillo" genera avisos repetidos, no uno solo.
                 if (consecutive_detection_count >= ALERT_THRESHOLD
-                        and frame_time - last_alert_time >= ALERT_COOLDOWN):
+                        and frame_time - last_alert_time >= REALERT_INTERVAL):
                     last_alert_time = frame_time
                     # Fire-and-forget: S3 + API never block the capture loop.
                     io_executor.submit(handle_alert, enhanced.copy(), det_ts, score, coords, label)
@@ -471,8 +752,16 @@ try:
             if SHOW_WINDOWS:
                 last_annotated = draw_best_patch(enhanced, coords, score, label, detected)
 
-        # --- Stage 1: cheap motion gate on every frame (keeps bg model current) ---
+        # --- Stage 1 (PRIMERA CAPA): puerta de movimiento. La detección está APAGADA
+        #     salvo que el movimiento abra/re-arme una ventana de DETECTION_WINDOW_SECONDS. ---
         rois = get_motion_rois(frame)
+        if rois:
+            last_motion_rois = rois
+            if frame_time > active_until_time:
+                # Estaba apagada -> este movimiento ABRE una nueva ventana de detección.
+                print(f"[movimiento] ventana de detección abierta ({DETECTION_WINDOW_SECONDS:.0f}s)")
+            # Cada movimiento RE-ARMA el minuto: la ventana dura hasta 60s tras el último.
+            active_until_time = frame_time + DETECTION_WINDOW_SECONDS
 
         if time.time() - last_second_time >= 1.0:
             busy = pending_detection is not None and not pending_detection.done()
@@ -484,24 +773,18 @@ try:
             processed_counter = 0
             last_second_time = time.time()
 
-        # --- Stage 2: motion gives a fast path; a periodic full-frame sweep is the
-        #     safety net so a stationary target is still caught even with no motion. ---
-        full_scan_due = FULL_SCAN_INTERVAL > 0 and frame_time - last_full_scan >= FULL_SCAN_INTERVAL
-        if full_scan_due:
-            scan_rois = sliding_window_rois(frame)   # whole frame
-        elif rois:
-            scan_rois = rois                         # motion regions only
-        else:
-            scan_rois = None                         # nothing to scan this frame
+        # --- Stage 2: dentro de la ventana de movimiento se corre CLIP sobre la ZONA del
+        #     movimiento (rois actuales, o la última zona conocida si MOG2 la pierde un
+        #     instante). Fuera de la ventana, la detección está apagada. ---
+        detection_active = frame_time <= active_until_time
+        scan_rois = (rois or last_motion_rois) if detection_active else None
 
         worker_busy = pending_detection is not None and not pending_detection.done()
-        # A due full sweep bypasses the motion throttle so it never gets starved.
-        throttled = (frame_time - last_detection_time < MIN_DETECTION_INTERVAL) and not full_scan_due
+        throttled = frame_time - last_detection_time < MIN_DETECTION_INTERVAL
 
-        if scan_rois is not None and not worker_busy and not throttled:
+        if scan_rois and not worker_busy and not throttled:
             last_detection_time = frame_time
-            if full_scan_due:
-                last_full_scan = frame_time
+            # Todos los conceptos se evalúan (default): el movimiento ya es el filtro.
             pending_detection = detection_executor.submit(run_detection, frame.copy(), scan_rois)
             pending_meta = (frame.copy(), frame_time)
 
