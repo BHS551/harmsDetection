@@ -37,12 +37,18 @@ VERDAD = {
     "calle_peatones":    {"persona"},
     "obra_normal":       {"persona"},
     "accidente_laboral": {"persona"},
+    # Reclasificado en el ciclo 2: el VLM respondía "es una demostración de
+    # técnica de artes marciales, no violencia" y TIENE RAZÓN. Un randori no es
+    # una agresión. Etiquetarlo como violencia penalizaba al sistema por acertar.
+    # Como negativo es valiosísimo: movimiento brusco entre dos personas que NO
+    # debe alertar, justo el falso positivo que arruina un producto de seguridad.
+    "caida_judo":        {"persona"},
     "caida_escaleras":   {"caidas"},
-    "caida_judo":        {"caidas"},
     "disturbios_saqueo": {"robos", "violencia"},
     "disturbios_calle":  {"robos", "violencia"},
 }
-NEGATIVAS = {"naturaleza_vacia", "calle_peatones", "obra_normal", "accidente_laboral"}
+NEGATIVAS = {"naturaleza_vacia", "calle_peatones", "obra_normal", "accidente_laboral",
+             "caida_judo"}
 # Material no representativo de CCTV: se informa, pero no cuenta en el titular.
 NO_REPRESENTATIVAS = {"caida_escaleras"}
 
@@ -50,10 +56,29 @@ s3 = boto3.client("s3", region_name=REGION)
 ddb = boto3.client("dynamodb", region_name=REGION)
 
 
+# Segundos que tarda el worker en reconectar tras reiniciarse el publicador.
+# Medido en la prueba de cortes: ~14 s desde que vuelve el stream.
+GRACIA_RECONEXION = 20
+
+
 def set_escena(nombre):
     s3.put_object(Bucket=BUCKET, Key="testcam/control.json",
                   Body=json.dumps({"stream": "on", "escena": nombre}).encode(),
                   ContentType="application/json")
+
+
+def esperar_escena(nombre, timeout=60):
+    """Espera a que la cámara publique en estado.json que sirve `nombre`."""
+    limite = time.time() + timeout
+    while time.time() < limite:
+        try:
+            est = json.loads(s3.get_object(Bucket=BUCKET, Key="testcam/estado.json")["Body"].read())
+            if est.get("escena") == nombre:
+                return True
+        except Exception:
+            pass
+        time.sleep(3)
+    return False
 
 
 def detecciones_desde(ts_iso):
@@ -91,13 +116,19 @@ def main():
     minutos = float(sys.argv[2]) if len(sys.argv) > 2 else 3.0
     # Margen tras cambiar de escena: el control tarda <=5 s en aplicarla, el
     # publicador reinicia y el worker reconecta. Lo anterior a esto no cuenta.
-    ASENTAMIENTO = 45
 
     resultados = {}
     for escena in VERDAD:
         print(f"\n=== escena: {escena} ===", flush=True)
         set_escena(escena)
-        time.sleep(ASENTAMIENTO)
+        # Esperar a que la CÁMARA confirme el cambio (estado.json) en vez de dormir
+        # un tiempo fijo, y sumar solo la gracia de reconexión del worker. En el
+        # ciclo 1 se perdieron 10 de 30 detecciones —incluido el único verdadero
+        # positivo— porque caían en una ventana muerta de 45 s.
+        aplicada = esperar_escena(escena, timeout=60)
+        if not aplicada:
+            print("  aviso: la cámara no confirmó el cambio; se mide igualmente", flush=True)
+        time.sleep(GRACIA_RECONEXION)
         t0 = ahora_iso()
         time.sleep(minutos * 60)
         dets = detecciones_desde(t0)

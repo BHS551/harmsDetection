@@ -56,6 +56,8 @@ ESCENAS=(
   "caida_judo|https://upload.wikimedia.org/wikipedia/commons/4/44/Tai-otoshi_in_detail_by_Laszlo_Horvath_edited_0.webm|0|40"
   "disturbios_saqueo|https://upload.wikimedia.org/wikipedia/commons/1/17/Jacked_at_London_riots_-_8th_August.webm|0|40"
   "disturbios_calle|https://upload.wikimedia.org/wikipedia/commons/4/41/Medan-Indonesia_omnibus_law_riots.webm|0|40"
+  "pelea_calle|https://upload.wikimedia.org/wikipedia/commons/4/42/EURO_2016_street_fights-_English_vs_Russian_Hooligans.webm|20|40"
+  "interseccion|https://upload.wikimedia.org/wikipedia/commons/1/18/Intersection_Pie-IX-Sherbrooke.webm|30|40"
   "accidente_laboral|https://upload.wikimedia.org/wikipedia/commons/5/5a/Las_Ca%C3%ADdas_Cuestan_-_La_Historia_de_un_Safety_Man.webm|30|60"
 )
 
