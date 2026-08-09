@@ -67,6 +67,25 @@ el worker abra el stream rápido; el bucle usa `-c copy`, así que la CPU en ré
 permanente es mínima. Añadir escenas es sumar entradas al array `CLIPS` de
 `camera_userdata.sh`.
 
+## Comportamiento ante cortes (medido)
+
+Provocando `chaos down` sobre un worker en marcha:
+
+| Hora | Evento |
+|---|---|
+| 17:36:27 | corte aplicado |
+| 17:36:39 | primer `Connection refused` (cada ~3,5 s a partir de aquí) |
+| 17:37:18 | emisión restaurada |
+| 17:37:32 | primera detección nueva: **reconectado solo** |
+
+Dos conclusiones:
+
+- **El worker reconecta sin intervención**, unos 14 s después de que vuelva el
+  stream. Una cámara que se recupera vuelve a detectar sola.
+- **El worker NO se auto-termina** mientras la cámara está caída: sigue vivo
+  reintentando, así que una `m7i-flex.large` puede facturar horas sin producir
+  nada. Conviene revisar el umbral de auto-terminación por cámara inalcanzable.
+
 ## Para qué sirve
 
 Referencia medida con este banco: antes del cooldown, una escena transitada generaba
