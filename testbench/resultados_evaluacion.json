@@ -4,43 +4,46 @@
   "por_etiqueta": {}
  },
  "calle_peatones": {
-  "total": 3,
-  "por_etiqueta": {
-   "persona": 3
-  }
- },
- "obra_normal": {
-  "total": 0,
-  "por_etiqueta": {}
- },
- "accidente_laboral": {
   "total": 4,
   "por_etiqueta": {
    "persona": 4
   }
  },
- "caida_escaleras": {
+ "obra_normal": {
+  "total": 2,
+  "por_etiqueta": {
+   "persona": 2
+  }
+ },
+ "accidente_laboral": {
   "total": 3,
   "por_etiqueta": {
    "persona": 3
   }
  },
  "caida_judo": {
-  "total": 2,
+  "total": 1,
   "por_etiqueta": {
-   "persona": 2
+   "persona": 1
   }
  },
- "disturbios_saqueo": {
+ "caida_escaleras": {
   "total": 4,
   "por_etiqueta": {
    "persona": 4
+  }
+ },
+ "disturbios_saqueo": {
+  "total": 3,
+  "por_etiqueta": {
+   "persona": 3
   }
  },
  "disturbios_calle": {
   "total": 4,
   "por_etiqueta": {
-   "persona": 4
+   "persona": 3,
+   "caidas": 1
   }
  }
 }

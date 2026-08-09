@@ -196,3 +196,69 @@ contradice el titular:
 4. Probar contexto temporal para caídas: comparar dos fotogramas separados ~1 s
    en la misma pregunta al VLM, que es lo mínimo para distinguir "tumbado" de
    "se ha caído".
+
+---
+
+## Ciclo 2 — preguntas del VLM reescritas y medición corregida (2026-08-09)
+
+### 4-5. Cambios ejecutados
+
+1. **Preguntas del VLM reescritas a partir de sus propias respuestas del ciclo 1**
+   (`vlm.py`). No se inventaron: las dictó el log.
+   - `caidas`: se pregunta por el ESTADO ("¿hay alguien tendido o derrumbado en el
+     suelo?") en vez del instante. El VLM hilaba finísimo: *"no se ha caído, está
+     tendida en el suelo"*. Para vigilancia, alguien en el suelo YA es el evento.
+   - `violencia`: se excluye explícitamente deporte, entrenamiento y demostración.
+   - `robos`: se pregunta por indicios visibles en vez de por el acto en curso.
+2. **Medición corregida** (`evaluar.py`): espera a que la cámara confirme el cambio
+   en `estado.json` en vez de dormir 45 s a ciegas.
+3. **`caida_judo` reclasificado a negativo difícil**: el VLM decía "es una
+   demostración de artes marciales" y tiene razón.
+
+### 6-7. Resultados
+
+**Negativos: 5/5 limpios** (antes 4/4). El judo, ahora negativo, generó 1 alerta de
+persona y **ninguna** de violencia, con el VLM rechazando 15 veces seguidas con
+*"NO, parece un entrenamiento de artes marciales"* / *"NO Es un entrenamiento de
+Judo"*. La exclusión funciona.
+
+**Positivos: la matriz dice 0/3, pero es incorrecto.** Inspeccionando los frames
+guardados uno por uno:
+
+| detección | frame | veredicto |
+|---|---|---|
+| `violencia` 23:33:01 | disturbios de Medan: gente lanzando objetos, escombros, personas dispersándose | **VERDADERO POSITIVO** |
+| `caidas` 23:35:50 | misma escena; el VLM dice "una persona está tendida en el suelo" pero en el frame hay alguien **sentado** junto a un parterre | **falso positivo** (contradice la propia pregunta, que excluye "sentada o agachada") |
+
+Es decir: **1 de 3 positivos detectado de verdad**, no 0. La matriz falló porque
+la detección de `violencia` volvió a caer fuera de la ventana de medición.
+
+**Coste** (30 min medidos): 466 llamadas VLM/hora → 29,80 USD/cámara/mes de
+Bedrock; total 101,18 USD dedicada / 34,49 USD Fase B a 10 cámaras. Igual que el
+ciclo 1 dentro del ruido: el regulador de caudal ya había hecho su trabajo.
+
+### Hallazgo de fondo: el techo de la arquitectura
+
+Sobre los disturbios de Londres el VLM **describe indicios y aun así responde NO**:
+
+```
+no robos:     NO, la imagen muestra una puerta cerrada con un agujero, pero...
+no violencia: NO, ... sino un incendio con...
+no violencia: NO, parece ser una formación de policías en una manifestación
+```
+
+Ve una puerta reventada, un incendio y líneas de antidisturbios, y dice que no.
+No se equivoca: en un fotograma suelto de un disturbio casi nunca hay un puñetazo
+en curso. **El error de concepto es preguntar por el acto y no por el rastro**, el
+mismo que ya se corrigió en caídas y que no se aplicó a robos.
+
+### Pasos para el ciclo 3
+
+1. **Aplicar a `robos` el principio del rastro**: puerta forzada, escaparate roto,
+   incendio, mercancía por el suelo. Es la corrección con más recorrido pendiente.
+2. **Endurecer `caidas`**: el falso positivo vino de aceptar a alguien sentado.
+   Exigir postura horizontal explícita.
+3. **Contar bien**: la ventana sigue perdiendo detecciones. Medir el intervalo
+   completo entre cambios de escena, sin descartar nada.
+4. **Cámara de 10 escenas** (ya preparada en `camera_userdata.sh`), con
+   `pelea_calle`: sigue sin haber un positivo de pelea real en el banco.

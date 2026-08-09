@@ -1,38 +1,38 @@
 
 === escena: naturaleza_vacia ===
-  alertas: 1  {'persona': 1}
+  alertas: 0  {}
 
 === escena: calle_peatones ===
   alertas: 4  {'persona': 4}
 
 === escena: obra_normal ===
-  alertas: 3  {'persona': 3}
+  alertas: 2  {'persona': 2}
 
 === escena: accidente_laboral ===
-  alertas: 4  {'persona': 4}
+  alertas: 3  {'persona': 3}
+
+=== escena: caida_judo ===
+  alertas: 1  {'persona': 1}
 
 === escena: caida_escaleras ===
   alertas: 4  {'persona': 4}
 
-=== escena: caida_judo ===
-  alertas: 2  {'persona': 2}
-
 === escena: disturbios_saqueo ===
-  alertas: 4  {'persona': 4}
+  alertas: 3  {'persona': 3}
 
 === escena: disturbios_calle ===
-  alertas: 3  {'persona': 3}
+  alertas: 4  {'persona': 3, 'caidas': 1}
 
 
 ########## MATRIZ ##########
-  naturaleza_vacia     alertas=   1  {'persona': 1}                                 correcto (sin alerta de incidente)
+  naturaleza_vacia     alertas=   0  {}                                             correcto (sin alerta de incidente)
   calle_peatones       alertas=   4  {'persona': 4}                                 correcto (sin alerta de incidente)
-  obra_normal          alertas=   3  {'persona': 3}                                 correcto (sin alerta de incidente)
-  accidente_laboral    alertas=   4  {'persona': 4}                                 correcto (sin alerta de incidente)
+  obra_normal          alertas=   2  {'persona': 2}                                 correcto (sin alerta de incidente)
+  accidente_laboral    alertas=   3  {'persona': 3}                                 correcto (sin alerta de incidente)
+  caida_judo           alertas=   1  {'persona': 1}                                 correcto (sin alerta de incidente)
   caida_escaleras      alertas=   4  {'persona': 4}                                 NO DETECTADO (esperado ['caidas'])
-  caida_judo           alertas=   2  {'persona': 2}                                 NO DETECTADO (esperado ['caidas'])
-  disturbios_saqueo    alertas=   4  {'persona': 4}                                 NO DETECTADO (esperado ['robos', 'violencia'])
-  disturbios_calle     alertas=   3  {'persona': 3}                                 NO DETECTADO (esperado ['robos', 'violencia'])
+  disturbios_saqueo    alertas=   3  {'persona': 3}                                 NO DETECTADO (esperado ['robos', 'violencia'])
+  disturbios_calle     alertas=   4  {'persona': 3, 'caidas': 1}                    NO DETECTADO (esperado ['robos', 'violencia'])
 
-  positivos detectados: 0/4   negativos limpios: 4/4
+  positivos detectados: 0/3   negativos limpios: 5/5
   detalle -> resultados_evaluacion.json
