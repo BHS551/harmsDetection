@@ -7,6 +7,7 @@ una cola de entrada y escribe en la(s) de salida; funcionan igual con LocalQueue
   Capa 1 (clip):   score contrastivo -> "clear" (alerta), "ambiguous" (->VLM), "none".
   Capa 2 (vlm):    juicio situacional sobre lo ambiguo -> alerta si confirma.
 """
+import os
 import time
 import cv2
 import numpy as np
@@ -19,6 +20,13 @@ from transport import pack_frame, load_frame, cleanup_frame
 # Un evento abstracto (robo/violencia/caída) NUNCA se resuelve solo con CLIP:
 # siempre pasa al VLM. Persona/objeto pueden cerrarse con CLIP si el margen es alto.
 ABSTRACT_EVENTS = {"caidas", "robos", "violencia"}
+
+# Caudal máximo hacia la capa VLM: un juicio por (cámara, etiqueta) cada N segundos.
+# Es el regulador de coste del sistema; súbelo para gastar menos, bájalo para
+# reaccionar antes. El cooldown de alertas de common.py actúa DESPUÉS del VLM, así
+# que no sirve para esto: cuando llega, el gasto ya se produjo.
+VLM_MIN_INTERVAL = float(os.environ.get("HEIMDALL_VLM_MIN_INTERVAL", "6"))
+_ultimo_vlm = {}
 
 
 def frames_from_rtsp(rtsp_url, fatal_on_fail=True, label=""):
@@ -222,9 +230,21 @@ def run_clip(in_queue, vlm_queue, scorer, distributed=False, stop_event=None,
                 if decision == "clear":
                     _fire(alert_pool, jpg, msg, score, coords, label, "clip")
                 elif decision == "ambiguous":
-                    out = {**{k: v for k, v in msg.items() if k != "_handle"},
-                           "label": label, "score": score, "coords": list(coords) if coords else None}
-                    vlm_queue.send(out)
+                    # La capa 2 es el coste dominante (~120 USD/cámara/mes medidos:
+                    # 1.877 llamadas/hora, el 97,8% de los candidatos). Una ráfaga de
+                    # movimiento manda ~10 fotogramas casi idénticos y se pagaba un
+                    # juicio por cada uno. Basta con juzgar uno por ventana y etiqueta:
+                    # la escena no cambia en 3 s, así que no se pierde señal.
+                    clave = (msg.get("camera_name", "?"), normalize_word(label))
+                    ahora = time.time()
+                    if ahora - _ultimo_vlm.get(clave, 0.0) < VLM_MIN_INTERVAL:
+                        decision = "none"   # descartado por caudal, no por puntuación
+                        print(f"[clip] {label} score={score:.3f} -> vlm omitido (caudal)")
+                    else:
+                        _ultimo_vlm[clave] = ahora
+                        out = {**{k: v for k, v in msg.items() if k != "_handle"},
+                               "label": label, "score": score, "coords": list(coords) if coords else None}
+                        vlm_queue.send(out)
             finally:
                 in_queue.delete(msg)
                 # El frame temporal en S3: si fue AMBIGUO lo consume la capa 2 (lo borra
@@ -242,9 +262,20 @@ def run_vlm(in_queue, distributed=False, stop_event=None, alert_pool=None):
                 if jpg is None:
                     continue
                 label = msg.get("label", "?")
-                # recortar a la zona sospechosa para dar al VLM el contexto justo
-                crop_bytes = _crop_jpg(jpg, msg.get("coords"))
-                confirmed, reason = vlm_mod.judge(crop_bytes, label)
+                # Un evento abstracto (robo, pelea, caída) se define por la relación
+                # entre personas y con el entorno, no por lo que hay dentro de una
+                # mancha de movimiento. Recortar borra justo esa información: medido
+                # sobre 4 escenas reales de incidente, el VLM rechazaba el 100% de los
+                # candidatos (0 de 210) porque se le preguntaba "¿hay un robo?" sobre
+                # un rectángulo de ~130 px. La literatura apunta a lo mismo: para
+                # reconocer interacción hace falta contexto global además del local.
+                # Para conceptos de OBJETO ("persona", "cuchillo") el recorte sigue
+                # siendo mejor: concentra resolución donde está la evidencia.
+                if normalize_word(label) in ABSTRACT_EVENTS:
+                    img_bytes = jpg
+                else:
+                    img_bytes = _crop_jpg(jpg, msg.get("coords"))
+                confirmed, reason = vlm_mod.judge(img_bytes, label)
                 print(f"[vlm] label={label} confirmed={confirmed} :: {reason[:80]}")
                 if confirmed:
                     coords = tuple(msg["coords"]) if msg.get("coords") else None

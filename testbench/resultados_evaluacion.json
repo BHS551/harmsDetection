@@ -1,21 +1,17 @@
 {
  "naturaleza_vacia": {
-  "total": 1,
-  "por_etiqueta": {
-   "persona": 1
-  }
+  "total": 0,
+  "por_etiqueta": {}
  },
  "calle_peatones": {
-  "total": 4,
-  "por_etiqueta": {
-   "persona": 4
-  }
- },
- "obra_normal": {
   "total": 3,
   "por_etiqueta": {
    "persona": 3
   }
+ },
+ "obra_normal": {
+  "total": 0,
+  "por_etiqueta": {}
  },
  "accidente_laboral": {
   "total": 4,
@@ -24,9 +20,9 @@
   }
  },
  "caida_escaleras": {
-  "total": 4,
+  "total": 3,
   "por_etiqueta": {
-   "persona": 4
+   "persona": 3
   }
  },
  "caida_judo": {
@@ -42,9 +38,9 @@
   }
  },
  "disturbios_calle": {
-  "total": 3,
+  "total": 4,
   "por_etiqueta": {
-   "persona": 3
+   "persona": 4
   }
  }
 }
