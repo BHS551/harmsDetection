@@ -1,19 +1,20 @@
 {
  "naturaleza_vacia": {
-  "total": 0,
-  "por_etiqueta": {}
+  "total": 2,
+  "por_etiqueta": {
+   "persona": 2
+  }
  },
  "calle_peatones": {
-  "total": 5,
+  "total": 6,
   "por_etiqueta": {
-   "persona": 5
+   "persona": 6
   }
  },
  "obra_normal": {
-  "total": 4,
+  "total": 3,
   "por_etiqueta": {
-   "persona": 3,
-   "caidas": 1
+   "persona": 3
   }
  },
  "accidente_laboral": {
@@ -23,44 +24,40 @@
   }
  },
  "caida_judo": {
-  "total": 3,
+  "total": 2,
   "por_etiqueta": {
-   "persona": 2,
-   "caidas": 1
+   "persona": 2
   }
  },
  "caida_escaleras": {
-  "total": 7,
+  "total": 5,
   "por_etiqueta": {
-   "persona": 5,
-   "caidas": 2
+   "persona": 5
   }
  },
  "disturbios_saqueo": {
-  "total": 7,
+  "total": 5,
   "por_etiqueta": {
-   "persona": 5,
-   "caidas": 2
+   "persona": 5
   }
  },
  "disturbios_calle": {
+  "total": 4,
+  "por_etiqueta": {
+   "persona": 4
+  }
+ },
+ "pelea_calle": {
   "total": 5,
   "por_etiqueta": {
    "persona": 4,
    "caidas": 1
   }
  },
- "pelea_calle": {
-  "total": 9,
-  "por_etiqueta": {
-   "persona": 5,
-   "caidas": 4
-  }
- },
  "interseccion": {
-  "total": 1,
+  "total": 2,
   "por_etiqueta": {
-   "persona": 1
+   "persona": 2
   }
  }
 }

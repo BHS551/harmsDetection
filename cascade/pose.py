@@ -76,6 +76,30 @@ def _angulo_torso(kp):
     return math.degrees(math.atan2(dy, dx))    # 90 = vertical, 0 = horizontal
 
 
+def contar_personas(frame_bgr):
+    """Nº de personas detectadas por YOLO. -1 si el modelo no está disponible.
+
+    Existe porque CLIP NO sabe decidir si hay alguien: medido sobre una escena de
+    montaña sin una sola persona, su margen para "persona" llegó a 0.089, mientras
+    que los aciertos reales tienen mediana 0.063 y máximo 0.106. Las
+    distribuciones se solapan, así que ningún umbral las separa.
+    YOLO sí resuelve esto: detecta personas con caja y confianza, que es
+    exactamente la tarea para la que se entrenó, y encima ya está cargado en
+    memoria para las caídas. Sale gratis y sustituye a una consulta al VLM.
+    """
+    modelo = _cargar()
+    if modelo is None:
+        return -1
+    try:
+        res = modelo.predict(frame_bgr, verbose=False, conf=CONF_MIN, classes=[0])
+    except Exception:
+        return -1
+    if not res:
+        return 0
+    cajas = getattr(res[0], "boxes", None)
+    return 0 if cajas is None else len(cajas)
+
+
 def analizar(frame_bgr):
     """Devuelve (hay_caida, motivo). Nunca lanza: ante cualquier fallo devuelve
     (False, motivo) y el flujo normal por el VLM sigue disponible."""

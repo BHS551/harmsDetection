@@ -31,19 +31,33 @@ _ultimo_vlm = {}
 # Etiquetas que valen como prueba de que hay alguien en el fotograma.
 ETIQUETAS_PERSONA = ("persona", "person")
 
-# Corte por encima del cual CLIP decide SOLO, sin consultar al VLM.
-# El valor global (0.15) resultó INALCANZABLE: medido sobre 161 candidatos de
-# "persona", el margen máximo fue 0.106 y la mediana 0.063, así que la rama "clear"
-# no se ejecutó ni una vez y TODO el tráfico de personas se pagaba en el VLM —
-# que además confirmó 38 de 39, o sea que venía bien de origen.
-# Para persona se baja a 0.08: por encima del ruido medido (0.058 sobre una montaña
-# vacía, que el VLM rechazó con razón) y por debajo de los aciertos claros.
-# Los eventos abstractos NO usan esto: siempre pasan por el VLM.
-CLEAR_MARGIN_POR_ETIQUETA = {"persona": 0.08, "person": 0.08}
+# Bajar el corte de "persona" a 0.08 para que CLIP decidiera solo fue un ERROR y
+# se revierte: en una escena de montaña SIN NADIE, CLIP dio margen 0.089 y la
+# alerta se emitió sin revisión. Las distribuciones se solapan (aciertos: mediana
+# 0.063, máximo 0.106; ruido en escena vacía: hasta 0.089), así que ningún umbral
+# las separa. CLIP no puede decidir "persona" por su cuenta.
+# Quien sí puede es YOLO, que ya está cargado para las caídas: ver _confirma_yolo.
+CLEAR_MARGIN_POR_ETIQUETA = {}
 
 
 def _corte_claro(label, por_defecto):
     return CLEAR_MARGIN_POR_ETIQUETA.get(normalize_word(label), por_defecto)
+
+
+def _confirma_yolo(frame):
+    """¿Ve YOLO al menos una persona? None si el modelo no está disponible.
+
+    Es el árbitro local que sustituye al VLM para la etiqueta "persona": detección
+    con caja y confianza en vez de margen contrastivo difuso. Si no está
+    disponible devuelve None y la decisión vuelve a delegarse en el VLM.
+    """
+    try:
+        import pose
+        n = pose.contar_personas(frame)
+        return None if n < 0 else n > 0
+    except Exception as e:
+        print(f"[pose] recuento no disponible: {type(e).__name__}")
+        return None
 
 
 def _postura_horizontal(frame):
@@ -281,6 +295,12 @@ def run_clip(in_queue, vlm_queue, scorer, distributed=False, stop_event=None,
                 score, label, coords, por_etiqueta = scorer.score_detallado(frame, rois)
                 cam_bl = msg.get("blacklist")
                 allowed = None if not cam_bl else {normalize_word(b) for b in cam_bl}
+                # Una sola inferencia de YOLO por candidato, reutilizada por las dos
+                # ramas que la necesitan (arbitraje de "persona" y postura de caída).
+                # Se calcula solo si la etiqueta ganadora es de persona, para no
+                # pagar cómputo en candidatos que no lo van a usar.
+                veredicto_yolo = (_confirma_yolo(frame)
+                                  if normalize_word(label or "") in ETIQUETAS_PERSONA else None)
                 vigila_caidas = allowed is None or "caidas" in allowed
                 if vigila_caidas and _hay_persona(por_etiqueta, scorer) \
                         and _postura_horizontal(frame):
@@ -304,6 +324,16 @@ def run_clip(in_queue, vlm_queue, scorer, distributed=False, stop_event=None,
                     # aquí sale gratis; preguntar cuesta.
                     decision = "none"
                     print(f"[clip] {label} score={score:.3f} -> descartado (sin persona)")
+                elif normalize_word(label) in ETIQUETAS_PERSONA and veredicto_yolo is not None:
+                    # "persona" la arbitra YOLO en local, no el VLM. Es la etiqueta
+                    # con más tráfico con diferencia, así que sacarla de Mimir es el
+                    # mayor ahorro disponible; y además es MÁS fiable que CLIP, que
+                    # confundía una montaña nevada con una persona.
+                    if veredicto_yolo:
+                        decision = "clear"
+                    else:
+                        decision = "none"
+                        print(f"[clip] persona score={score:.3f} -> descartada (YOLO no ve a nadie)")
                 elif normalize_word(label) in ABSTRACT_EVENTS or score < _corte_claro(label, clear_margin):
                     decision = "ambiguous"
                 else:
