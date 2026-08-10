@@ -46,9 +46,13 @@ VERDAD = {
     "caida_escaleras":   {"caidas"},
     "disturbios_saqueo": {"robos", "violencia"},
     "disturbios_calle":  {"robos", "violencia"},
+    # Mejor positivo del banco: personas TENDIDAS en el suelo tras una
+    # agresión, multitudes y antidisturbios. Prueba violencia y caídas a la vez.
+    "pelea_calle":       {"violencia", "caidas"},
+    "interseccion":      {"persona"},
 }
 NEGATIVAS = {"naturaleza_vacia", "calle_peatones", "obra_normal", "accidente_laboral",
-             "caida_judo"}
+             "caida_judo", "interseccion"}
 # Material no representativo de CCTV: se informa, pero no cuenta en el titular.
 NO_REPRESENTATIVAS = {"caida_escaleras"}
 
