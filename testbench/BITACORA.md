@@ -341,3 +341,77 @@ puerta sirve poco" sino "sirve poco cuando siempre hay gente".
    incidente plausible en una escena de incidente, en vez de exigir la exacta.
 4. **Medir la curva coste/latencia** de `VLM_MIN_INTERVAL` (6 s hoy) para que la
    elección del punto sea del usuario y no del implementador.
+
+---
+
+## Ciclo 4 — caídas por postura (2026-08-10)
+
+### 4-5. Cambios
+
+`cascade/pose.py` con YOLOv8n-Pose (modelo servido desde S3, no desde GitHub).
+Dos evidencias de postura tumbada: caja ancha/baja (ratio ≥ 1,2) o torso ≤ 35°
+sobre la horizontal. Si la postura confirmaba, se alertaba **sin llamar al VLM**.
+
+### 6-7. Resultados
+
+| | ciclo 3 | ciclo 4 |
+|---|---|---|
+| positivos | 1/4 | **2/4** |
+| negativos limpios | 6/6 | **4/6** |
+
+La pose **dobló el recall** (detectó `pelea_calle` y `caida_escaleras`, que ningún
+ciclo anterior había cazado) pero rompió dos negativos: `obra_normal` y
+`caida_judo` dispararon `caidas` falsamente.
+
+**Causa, y es conceptual, no de calibración**: la geometría distingue *horizontal*
+de *vertical*, no *"se ha caído"* de *"está tumbado a propósito"*. Un obrero
+agachado y un judoca proyectado son geométricamente idénticos a una víctima.
+
+### Tres errores de implementación, y el patrón que los une
+
+1. **Instalar `ultralytics` rompió el worker entero.** Arrastró `opencv-python`,
+   que necesita `libGL` y sustituyó al `opencv-python-headless` del AMI. `import
+   cv2` falló, la cascada no importó y el monolito de respaldo **tampoco**, porque
+   comparte la dependencia. *El fallback no es un fallback si comparte dependencias.*
+2. **`--no-deps` dejó a ultralytics sin `PyYAML`.** Intentar ser más listo que el
+   resolvedor de dependencias, dos veces. Lo correcto: instalar con dependencias y
+   reparar solo el conflicto conocido (desinstalar el opencv con GUI, forzar el
+   headless).
+3. **La pose era código muerto y no daba error.** Estaba condicionada a que CLIP
+   eligiera `caidas` como etiqueta ganadora, y CLIP casi nunca la elige — que es
+   justamente la razón de añadir pose. Cero invocaciones en un arranque completo.
+   La evaluación habría corrido entera y yo habría concluido que la pose no sirve.
+
+**Aprendizaje transversal: verificar que el código nuevo SE EJECUTA, no solo que
+no falla.** Los dos primeros errores fueron ruidosos y se vieron en minutos; el
+tercero era silencioso y solo apareció al buscar sus líneas en el log.
+
+### Medición que abre el ciclo 5
+
+Sobre 161 candidatos con etiqueta `persona` en una ejecución completa:
+
+```
+decisión de Heimdall:  ambiguous 122 | none 30 | clear 0
+margen: min -0.002 | mediana 0.063 | max 0.106     (clear_margin = 0.15)
+VLM: confirmó 38, rechazó 1 (y ese era un fotograma borroso)
+```
+
+`clear_margin` es **inalcanzable**: la rama nunca se ejecuta y todo el tráfico de
+personas se paga en el VLM, que además lo confirma casi siempre. Es la mayor bolsa
+de gasto evitable que queda.
+
+---
+
+## Ciclo 5 — la pose como portero y umbral alcanzable para persona
+
+### 4-5. Cambios ejecutados
+
+1. **La pose deja de alertar y pasa a disparar la consulta**: postura horizontal →
+   se pregunta al VLM forzando la etiqueta `caidas`. Cada capa hace lo que sabe —
+   la pose aporta el recall que CLIP no tiene, el VLM el criterio que la geometría
+   no tiene. Sigue siendo barato porque alguien *realmente* horizontal es raro.
+2. **Pregunta de caídas endurecida**: excluye explícitamente deporte, entrenamiento
+   y posturas voluntarias, que es por donde se colaba el judo.
+3. **`clear_margin` por etiqueta**: `persona` baja a 0.08, por encima del ruido
+   medido (0.058 en la montaña vacía, que el VLM rechazó) y por debajo de los
+   aciertos claros. Los eventos abstractos siguen pasando siempre por el VLM.

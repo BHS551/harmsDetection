@@ -31,6 +31,48 @@ _ultimo_vlm = {}
 # Etiquetas que valen como prueba de que hay alguien en el fotograma.
 ETIQUETAS_PERSONA = ("persona", "person")
 
+# Corte por encima del cual CLIP decide SOLO, sin consultar al VLM.
+# El valor global (0.15) resultó INALCANZABLE: medido sobre 161 candidatos de
+# "persona", el margen máximo fue 0.106 y la mediana 0.063, así que la rama "clear"
+# no se ejecutó ni una vez y TODO el tráfico de personas se pagaba en el VLM —
+# que además confirmó 38 de 39, o sea que venía bien de origen.
+# Para persona se baja a 0.08: por encima del ruido medido (0.058 sobre una montaña
+# vacía, que el VLM rechazó con razón) y por debajo de los aciertos claros.
+# Los eventos abstractos NO usan esto: siempre pasan por el VLM.
+CLEAR_MARGIN_POR_ETIQUETA = {"persona": 0.08, "person": 0.08}
+
+
+def _corte_claro(label, por_defecto):
+    return CLEAR_MARGIN_POR_ETIQUETA.get(normalize_word(label), por_defecto)
+
+
+def _postura_horizontal(frame):
+    """True si hay alguien en postura horizontal. Es un DISPARADOR, no un veredicto.
+
+    Medido en el ciclo 4: usar la postura para alertar directamente dobló el recall
+    (1/4 -> 2/4) pero rompió dos negativos, porque la geometría distingue
+    "horizontal" de "vertical", no "se ha caído" de "está tumbado a propósito".
+    Un obrero agachado y un judoca proyectado son geométricamente idénticos a una
+    víctima en el suelo.
+
+    Por eso la postura ya no alerta: solo decide a QUIÉN vale la pena preguntar.
+    Aporta el recall que CLIP no tiene; el criterio lo sigue poniendo el VLM, que
+    sí sabe descartar deporte y posturas voluntarias. Y sigue siendo mucho más
+    barato que preguntar por cada candidato con persona, porque alguien realmente
+    horizontal es una fracción pequeña.
+    """
+    try:
+        import pose
+        if not pose.disponible():
+            return False
+        hay, motivo = pose.analizar(frame)
+        if hay:
+            print(f"[pose] postura horizontal detectada: {motivo} -> se consulta al VLM")
+        return hay
+    except Exception as e:
+        print(f"[pose] fallo, se ignora la postura: {type(e).__name__}: {e}")
+        return False
+
 
 def _hay_persona(por_etiqueta, scorer):
     """True si CLIP ve una persona con margen suficiente.
@@ -239,7 +281,17 @@ def run_clip(in_queue, vlm_queue, scorer, distributed=False, stop_event=None,
                 score, label, coords, por_etiqueta = scorer.score_detallado(frame, rois)
                 cam_bl = msg.get("blacklist")
                 allowed = None if not cam_bl else {normalize_word(b) for b in cam_bl}
-                if label is None or score < scorer.threshold_for(label):
+                vigila_caidas = allowed is None or "caidas" in allowed
+                if vigila_caidas and _hay_persona(por_etiqueta, scorer) \
+                        and _postura_horizontal(frame):
+                    # La postura DISPARA la consulta, no la alerta. Se fuerza la
+                    # etiqueta a "caidas" porque la pregunta que hay que hacerle al
+                    # VLM es la de la caída, gane lo que gane CLIP —que casi nunca
+                    # elige "caidas", precisamente por lo mala que es en ese concepto.
+                    decision = "ambiguous"
+                    label = "caidas"
+                    score = max(score, por_etiqueta.get("caidas", 0.0))
+                elif label is None or score < scorer.threshold_for(label):
                     decision = "none"
                 elif allowed is not None and normalize_word(label) not in allowed:
                     decision = "none"   # concepto no monitoreado por esta cámara
@@ -252,7 +304,7 @@ def run_clip(in_queue, vlm_queue, scorer, distributed=False, stop_event=None,
                     # aquí sale gratis; preguntar cuesta.
                     decision = "none"
                     print(f"[clip] {label} score={score:.3f} -> descartado (sin persona)")
-                elif normalize_word(label) in ABSTRACT_EVENTS or score < clear_margin:
+                elif normalize_word(label) in ABSTRACT_EVENTS or score < _corte_claro(label, clear_margin):
                     decision = "ambiguous"
                 else:
                     decision = "clear"

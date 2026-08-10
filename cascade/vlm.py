@@ -25,9 +25,15 @@ QUESTION = {
               "fuerce o rompa una puerta, escaparate o vehículo, o se lleve mercancía."),
     "violencia": ("¿hay una pelea o agresión física real entre personas? Responde NO si es "
                   "deporte de contacto, un entrenamiento o una demostración controlada."),
-    "caidas": ("¿hay alguna persona tendida o derrumbada en el suelo? Responde SI aunque no "
-               "se vea el momento de la caída: basta con que esté en el suelo o desplomada "
-               "en una postura anómala. Responde NO si está sentada o agachada a propósito."),
+    # La postura horizontal la aporta ahora la capa de pose; al VLM se le pide lo
+    # que la geometría NO puede saber: si esa persona en el suelo es un incidente.
+    # En el ciclo 4, alertar solo por geometría metió falsos positivos con un
+    # obrero agachado y con un judoca proyectado, ambos horizontales de verdad.
+    "caidas": ("¿hay alguna persona tendida o derrumbada en el suelo de forma accidental? "
+               "Responde SI aunque no se vea el momento de la caída: basta con que esté "
+               "tumbada o desplomada como tras un desmayo o un tropiezo. Responde NO si "
+               "está sentada, agachada o tumbada a propósito, y NO si es deporte, "
+               "entrenamiento o juego (por ejemplo alguien derribado en judo o fútbol)."),
     "persona": "¿hay una persona (un ser humano) en la imagen?",
     "person": "is there a person (a human) in the image?",
     "cuchillo": "¿hay un cuchillo o un arma visible?",
