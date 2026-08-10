@@ -17,8 +17,18 @@ sys.path.insert(0, os.path.dirname(__file__))
 import common, vlm as vlm_mod, tiers
 from vision import ClipScorer
 
-SCR = "/tmp/claude-0/-home-user/4ba2934f-f96f-56e2-aa3c-44d0857a4cd9/scratchpad"
+# Directorio con los assets de la prueba (frames, zip de armas, etiquetas, clips).
+# Estaba fijado al scratchpad de una sesión concreta, que se borra al terminarla,
+# así que el fichero dejaba de arrancar. Ahora se configura con SKYEYE_TEST_ASSETS.
+SCR = os.environ.get("SKYEYE_TEST_ASSETS", os.path.expanduser("~/skyeye-test-assets"))
 E2E = SCR + "/e2e"
+
+if not os.path.isdir(SCR):
+    raise SystemExit(
+        f"No existe el directorio de assets: {SCR}\n"
+        "Indícalo con SKYEYE_TEST_ASSETS=/ruta/a/los/assets, o usa testbench/mock_camera.py\n"
+        "si lo que quieres es una prueba end-to-end contra una cámara RTSP real."
+    )
 
 # --- capturar alertas + contar VLM (sin efectos reales) ---
 CAPTURED = []

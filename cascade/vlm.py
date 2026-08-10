@@ -11,9 +11,23 @@ MODEL_ID = os.environ.get("HEIMDALL_VLM_MODEL", "us.amazon.nova-lite-v1:0")
 
 # Pregunta específica por concepto (situacional, no solo "hay un objeto").
 QUESTION = {
-    "robos": "¿está ocurriendo un robo o alguien está robando/forzando algo?",
-    "violencia": "¿hay violencia real: una pelea o agresión física entre personas?",
-    "caidas": "¿una persona se ha caído al suelo o está tendida como tras una caída?",
+    # Las preguntas se reescribieron con las respuestas REALES del VLM sobre
+    # escenas de incidente (ciclo 1). Tres problemas observados:
+    #  - "¿está ocurriendo un robo?" es injuzgable en un fotograma: nadie ve el
+    #    acto completo. Se pregunta por INDICIOS, que sí son visibles.
+    #  - "violencia" confirmaba con deporte de contacto; se excluye explícitamente
+    #    tras ver al VLM razonar "es una demostración de artes marciales".
+    #  - en caídas el VLM hilaba finísimo ("no se ha caído, está tendida en el
+    #    suelo"). Para vigilancia, una persona en el suelo YA es el evento
+    #    alertable: se detecta el estado posterior, no el instante de la caída,
+    #    que además es lo único observable en un fotograma suelto.
+    "robos": ("¿hay indicios de robo, saqueo o allanamiento? Cuenta como SI que alguien "
+              "fuerce o rompa una puerta, escaparate o vehículo, o se lleve mercancía."),
+    "violencia": ("¿hay una pelea o agresión física real entre personas? Responde NO si es "
+                  "deporte de contacto, un entrenamiento o una demostración controlada."),
+    "caidas": ("¿hay alguna persona tendida o derrumbada en el suelo? Responde SI aunque no "
+               "se vea el momento de la caída: basta con que esté en el suelo o desplomada "
+               "en una postura anómala. Responde NO si está sentada o agachada a propósito."),
     "persona": "¿hay una persona (un ser humano) en la imagen?",
     "person": "is there a person (a human) in the image?",
     "cuchillo": "¿hay un cuchillo o un arma visible?",

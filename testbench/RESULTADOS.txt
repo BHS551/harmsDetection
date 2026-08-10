@@ -1,0 +1,46 @@
+
+=== escena: naturaleza_vacia ===
+  alertas: 1  {'persona': 1}
+
+=== escena: calle_peatones ===
+  alertas: 4  {'persona': 4}
+
+=== escena: obra_normal ===
+  alertas: 2  {'persona': 2}
+
+=== escena: accidente_laboral ===
+  alertas: 4  {'persona': 4}
+
+=== escena: caida_judo ===
+  alertas: 2  {'persona': 2}
+
+=== escena: caida_escaleras ===
+  alertas: 5  {'persona': 5}
+
+=== escena: disturbios_saqueo ===
+  alertas: 5  {'persona': 5}
+
+=== escena: disturbios_calle ===
+  alertas: 5  {'persona': 3, 'caidas': 2}
+
+=== escena: pelea_calle ===
+  alertas: 5  {'persona': 4, 'caidas': 1}
+
+=== escena: interseccion ===
+  alertas: 2  {'persona': 2}
+
+
+########## MATRIZ ##########
+  naturaleza_vacia     alertas=   1  {'persona': 1}                                 correcto (sin alerta de incidente)
+  calle_peatones       alertas=   4  {'persona': 4}                                 correcto (sin alerta de incidente)
+  obra_normal          alertas=   2  {'persona': 2}                                 correcto (sin alerta de incidente)
+  accidente_laboral    alertas=   4  {'persona': 4}                                 correcto (sin alerta de incidente)
+  caida_judo           alertas=   2  {'persona': 2}                                 correcto (sin alerta de incidente)
+  caida_escaleras      alertas=   5  {'persona': 5}                                 NO DETECTADO (esperado ['caidas'])
+  disturbios_saqueo    alertas=   5  {'persona': 5}                                 NO DETECTADO (esperado ['robos', 'violencia'])
+  disturbios_calle     alertas=   5  {'persona': 3, 'caidas': 2}                    NO DETECTADO (esperado ['robos', 'violencia'])
+  pelea_calle          alertas=   5  {'persona': 4, 'caidas': 1}                    DETECTADO ['caidas']
+  interseccion         alertas=   2  {'persona': 2}                                 correcto (sin alerta de incidente)
+
+  positivos detectados: 1/4   negativos limpios: 6/6
+  detalle -> resultados_evaluacion.json

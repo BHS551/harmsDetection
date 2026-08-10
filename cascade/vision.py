@@ -182,6 +182,16 @@ class ClipScorer:
 
     def score(self, frame_bgr, rois):
         """Devuelve (best_score, best_label, best_coords) por MARGEN contrastivo."""
+        s, l, c, _ = self.score_detallado(frame_bgr, rois)
+        return s, l, c
+
+    def score_detallado(self, frame_bgr, rois):
+        """Como score(), más un dict {etiqueta: mejor margen} con TODAS las etiquetas.
+
+        Lo necesita la puerta de personas de la capa 1: para decidir si vale la pena
+        preguntarle al VLM por un robo o una pelea hay que saber si además hay
+        alguien en el fotograma, no solo cuál fue la etiqueta ganadora.
+        """
         enhanced = enhance_frame(frame_bgr)
         image = Image.fromarray(cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB))
         tensors, coords = [], []
@@ -191,7 +201,7 @@ class ClipScorer:
             tensors.append(self.preprocess(image.crop((x1, y1, x2, y2))))
             coords.append((x1, y1, x2, y2))
         if not tensors:
-            return 0.0, None, None
+            return 0.0, None, None, {}
         batch = torch.stack(tensors).to(self.device)
         if self.use_half:
             batch = batch.half()
@@ -204,4 +214,13 @@ class ClipScorer:
         flat = int(torch.argmax(margins).item())
         npr = margins.shape[1]
         pi, qi = flat // npr, flat % npr
-        return float(margins[pi, qi].item()), self.labels[qi], coords[pi]
+
+        # Mejor margen por ETIQUETA (varios prompts pueden mapear a la misma).
+        por_etiqueta = {}
+        col_max = margins.max(dim=0).values          # mejor ROI para cada prompt
+        for j, etiqueta in enumerate(self.labels):
+            v = float(col_max[j].item())
+            if v > por_etiqueta.get(etiqueta, float("-inf")):
+                por_etiqueta[etiqueta] = v
+
+        return float(margins[pi, qi].item()), self.labels[qi], coords[pi], por_etiqueta
