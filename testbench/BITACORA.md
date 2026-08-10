@@ -262,3 +262,82 @@ mismo que ya se corrigió en caídas y que no se aplicó a robos.
    completo entre cambios de escena, sin descartar nada.
 4. **Cámara de 10 escenas** (ya preparada en `camera_userdata.sh`), con
    `pelea_calle`: sigue sin haber un positivo de pelea real en el banco.
+
+---
+
+## Ciclo 3 — Heimdall más fuerte para abaratar Mimir (2026-08-10)
+
+Objetivo fijado por el usuario: hacer CLIP (Heimdall) lo más potente y barato
+posible para reducir el gasto del VLM (Mimir), que era el 97% del coste variable.
+
+### 3. Investigación
+
+La detección de caídas por **pose** (YOLOv8-Pose) alcanza 92–98% de precisión
+**sin VLM alguno**. Es la vía natural para que Heimdall resuelva la clase entera
+de caídas por su cuenta. No se implementó en este ciclo a propósito: añade la
+dependencia `ultralytics` y habría contaminado la medida del otro cambio.
+
+### 4-5. Cambios ejecutados
+
+1. `vision.ClipScorer.score_detallado()`: devuelve el mejor margen **por etiqueta**,
+   información que ya se calculaba y se tiraba.
+2. `tiers.run_clip`: **puerta de personas**. Un evento abstracto sin persona en el
+   fotograma se descarta sin llamar al VLM. La puerta se abre si la cámara no
+   monitoriza personas (una cámara solo con "robos" es legítima y no debe quedar
+   ciega). Seis casos límite verificados.
+3. Banco ampliado a 10 escenas: entra `pelea_calle` (el mejor positivo: personas
+   tendidas en el suelo tras una agresión) e `interseccion` (negativo urbano).
+
+### 6-7. Resultados
+
+**Eficacia — el mejor ciclo hasta ahora.**
+
+```
+negativos limpios   6 / 6      (ciclo 2: 5/5)
+positivos           1 / 4      (pelea_calle)
+```
+
+Los **dos** verdaderos positivos de `pelea_calle` se verificaron mirando los
+fotogramas guardados:
+
+| detección | frame | veredicto |
+|---|---|---|
+| `caidas` score 0.100 | dos personas tendidas en el suelo, otra agachada sobre ellas, multitud | **verdadero positivo** |
+| `violencia` score 0.089 | multitud en plena reyerta, persona en el suelo | **verdadero positivo** |
+
+`disturbios_calle` produjo además 2 `caidas` que la matriz cuenta como fallo,
+porque su verdad de referencia solo admite `robos`/`violencia`. Una persona en el
+suelo durante un disturbio es una alerta perfectamente legítima: **la rigidez de
+la verdad de referencia está penalizando aciertos**.
+
+**Coste — mejor de lo esperado.**
+
+| | ciclo 0 | ciclo 1 | ciclo 2 | ciclo 3 |
+|---|---|---|---|---|
+| llamadas VLM/hora | 1.877 | 432 | 466 | **234** |
+| Bedrock USD/cám/mes | 120,02 | 27,63 | 29,80 | **14,99** |
+| dedicada | 191,60 | 99,01 | 101,18 | **85,97** |
+| Fase B, 5 cám (paquete) | — | — | 191,67 | **115,62** |
+| Fase B, 10 cám | 124,92 | 32,32 | 34,49 | **19,29** |
+
+### Aprendizaje: el banco subestima esta mejora
+
+La puerta de personas solo descartó 9 candidatos en 8 minutos (~18% menos
+llamadas en la ventana medida), porque **casi todas las escenas del banco tienen
+gente**. En despliegue real —un local cerrado de noche, un almacén, un pasillo—
+la cámara pasa la mayor parte del tiempo sin nadie delante, y ahí la puerta
+elimina el gasto de esas horas por completo. La conclusión correcta no es "la
+puerta sirve poco" sino "sirve poco cuando siempre hay gente".
+
+### Pasos para el ciclo 4
+
+1. **YOLOv8-Pose para caídas** (92–98% sin VLM). Es la palanca grande pendiente:
+   quitaría una clase entera de las manos de Mimir.
+2. **Calibrar `clear_margin` para `persona`**: es la etiqueta que más tráfico
+   genera hacia el VLM. Márgenes medidos 0.03–0.09; con corte en ~0.07 CLIP
+   resolvería los casos claros sin consultar. Riesgo: la montaña vacía puntuó
+   0.058, así que hay que medir la curva antes de fijar el valor.
+3. **Flexibilizar la verdad de referencia**: aceptar cualquier etiqueta de
+   incidente plausible en una escena de incidente, en vez de exigir la exacta.
+4. **Medir la curva coste/latencia** de `VLM_MIN_INTERVAL` (6 s hoy) para que la
+   elección del punto sea del usuario y no del implementador.
