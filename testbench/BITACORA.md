@@ -415,3 +415,101 @@ de gasto evitable que queda.
 3. **`clear_margin` por etiqueta**: `persona` baja a 0.08, por encima del ruido
    medido (0.058 en la montaña vacía, que el VLM rechazó) y por debajo de los
    aciertos claros. Los eventos abstractos siguen pasando siempre por el VLM.
+
+### 6-7. Resultados del ciclo 5
+
+| | ciclo 3 | ciclo 4 | ciclo 5 |
+|---|---|---|---|
+| negativos limpios | 6/6 | 4/6 | **6/6** |
+| positivos | 1/4 | 2/4 | 1/4 |
+| Bedrock USD/cám/mes | **14,99** | — | 20,85 |
+
+**El ciclo 5 salió PEOR que el 3**: misma eficacia, 39% más caro. La pose como
+portero añade consultas sin aportar detecciones, porque el VLM acaba rechazando
+los casos marginales que la pose le lleva. Devolver el criterio al VLM sí
+recuperó la precisión (judo y obra limpios otra vez).
+
+**Y el cambio de umbral fue un error demostrado.** En `naturaleza_vacia` —montaña
+nevada, pinos, un aparcamiento vacío, **cero personas**— CLIP dio margen 0.089 a
+`persona` y la alerta salió sin revisión. Frame descargado y verificado a mano.
+
+```
+aciertos reales de persona    mediana 0.063 | máximo 0.106
+ruido en escena vacía                       hasta 0.089
+```
+
+Las distribuciones se solapan: **ningún umbral las separa**. CLIP no puede decidir
+"persona" por su cuenta, y el VLM no estaba cobrando de más, estaba haciendo un
+trabajo que CLIP no sabe hacer.
+
+---
+
+## Ciclo 6 — YOLO arbitra "persona" en local (2026-08-11)
+
+### 4-5. Cambios
+
+Se revierte el umbral del ciclo 5 y se sustituye por el árbitro correcto:
+`pose.contar_personas()` usa **YOLO**, que ya estaba cargado en memoria para las
+caídas desde el ciclo 4. Detecta personas con caja y confianza, no con un margen
+contrastivo difuso. Si ve a alguien → alerta sin VLM; si no → se descarta. Si el
+modelo no está disponible, la decisión vuelve a delegarse en el VLM.
+
+La inferencia se calcula **una vez por candidato** y se reutiliza; la primera
+versión la invocaba dos veces.
+
+### 6-7. Resultados
+
+```
+negativos limpios   6/6
+positivos           1/4   (pelea_calle, vía caidas)
+```
+
+**`persona` sale por completo del coste de Mimir**: las detecciones pasan a
+resolverse `via=clip` (YOLO en local). Verificado en vivo: 11 alertas seguidas sin
+una sola consulta al VLM, y 10 candidatos descartados porque *"YOLO no ve a
+nadie"* — justo los falsos positivos de la montaña del ciclo 5.
+
+Y corrige además la precisión: `naturaleza_vacia` pasa de 2 falsas alertas a **0**,
+e `interseccion` de 2 a **0**.
+
+| coste variable por cámara | |
+|---|---|
+| ciclo 0 | 121,08 $ |
+| ciclo 3 | 15,45 $ |
+| ciclo 5 | 21,56 $ |
+| **ciclo 6** | **17,37 $** |
+
+| topología | por cámara | paquete |
+|---|---|---|
+| dedicada | 87,89 $ | 87,89 $ |
+| Fase B, 5 cám. | 25,04 $ | 125,22 $ |
+| Fase B, 10 cám. | 21,21 $ | 212,07 $ |
+| Fase B, 20 cám. | 19,29 $ | 385,77 $ |
+
+### Dónde queda el sistema y qué falta
+
+Seis ciclos después: **coste −83%** (124,92 → 21,21 $ a 10 cámaras) y **precisión
+6/6**. El recall sigue en **1/4**, y ese es el problema abierto.
+
+Lo aprendido sobre el recall, que acota lo que se puede esperar:
+
+- La pose **sí** encuentra caídas que CLIP no ve (ciclo 4: 1/4 → 2/4), pero sin
+  criterio semántico mete falsos positivos. Con criterio (VLM), el VLM rechaza
+  también los verdaderos marginales. **Hoy no hay punto intermedio bueno.**
+- Los disturbios no se detectan porque en un fotograma suelto de un disturbio
+  casi nunca hay una agresión en curso: hay gente de pie, humo, policía formada.
+  Es un evento **temporal**, y el sistema mira fotogramas sueltos.
+
+### Pasos para el ciclo 7
+
+1. **Contexto temporal**: mandar al VLM 2-3 fotogramas separados ~1 s en la misma
+   consulta, en vez de uno. Es la limitación de fondo que ningún ajuste de prompt
+   o umbral va a resolver, y la literatura lo señala desde el principio.
+2. **Hornear `ultralytics` en el AMI**: hoy cada arranque de cámara lo instala,
+   añadiendo un par de minutos a la puesta en marcha.
+3. **Verdad de referencia más flexible**: aceptar cualquier etiqueta de incidente
+   plausible en una escena de incidente; hoy `disturbios_calle` con alerta de
+   `caidas` se cuenta como fallo.
+4. **Vigilar el ritmo de alertas**: al resolver `persona` en local subió a ~98/h
+   (antes 7,5/h), porque ya no pasa por el cuello de botella del VLM. El cooldown
+   lo limita, pero conviene revisar si ese volumen es deseable para el usuario.
