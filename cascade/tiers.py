@@ -44,6 +44,59 @@ def _corte_claro(label, por_defecto):
     return CLEAR_MARGIN_POR_ETIQUETA.get(normalize_word(label), por_defecto)
 
 
+# Búfer de fotogramas recientes por cámara, para poder componer la tira temporal.
+# Solo la capa 1 los ve todos: a la capa 2 llegan ya filtrados y espaciados por el
+# regulador de caudal, así que ahí no se podría reconstruir la secuencia.
+_historial = {}
+HISTORIAL_MAX = 12
+SEPARACION_TIRA = float(os.environ.get("HEIMDALL_SEPARACION_TIRA", "1.0"))  # segundos
+TIRA_MAX_BYTES = 180_000   # margen frente al límite de 256 KB de un mensaje SQS
+
+
+def _recordar_frame(camara, jpg):
+    from collections import deque
+    h = _historial.setdefault(camara, deque(maxlen=HISTORIAL_MAX))
+    h.append((time.time(), jpg))
+
+
+def _tira_temporal(msg):
+    """Compone en UNA imagen el fotograma actual y los ~1 s y ~2 s anteriores.
+
+    Devuelve None si no hay historial suficiente; el llamante cae entonces al
+    fotograma suelto, que es el comportamiento anterior.
+    """
+    h = _historial.get(msg.get("camera_name", "?"))
+    if not h or len(h) < 2:
+        return None
+    ahora = h[-1][0]
+    elegidos = [h[-1][1]]
+    for objetivo in (SEPARACION_TIRA, 2 * SEPARACION_TIRA):
+        cand = min(h, key=lambda p: abs((ahora - p[0]) - objetivo))
+        # Solo vale si de verdad está separado: si el búfer es corto, todos los
+        # fotogramas serían casi el mismo y la tira no aportaría nada.
+        if abs((ahora - cand[0]) - objetivo) < objetivo * 0.6:
+            elegidos.append(cand[1])
+    if len(elegidos) < 2:
+        return None
+    try:
+        imgs = [cv2.imdecode(np.frombuffer(b, np.uint8), cv2.IMREAD_COLOR) for b in elegidos]
+        imgs = [i for i in imgs if i is not None]
+        if len(imgs) < 2:
+            return None
+        alto = min(i.shape[0] for i in imgs)
+        imgs = [cv2.resize(i, (int(i.shape[1] * alto / i.shape[0]), alto)) for i in imgs]
+        # Orden cronológico: el más antiguo a la izquierda, para que se lea como
+        # una secuencia y no como fotogramas sueltos.
+        tira = np.hstack(list(reversed(imgs)))
+        ok, buf = cv2.imencode(".jpg", tira, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        if not ok or buf.nbytes > TIRA_MAX_BYTES:
+            return None
+        return buf.tobytes()
+    except Exception as e:
+        print(f"[tira] no se pudo componer: {type(e).__name__}")
+        return None
+
+
 def _confirma_yolo(frame):
     """¿Ve YOLO al menos una persona? None si el modelo no está disponible.
 
@@ -291,6 +344,9 @@ def run_clip(in_queue, vlm_queue, scorer, distributed=False, stop_event=None,
                 if jpg is None:
                     continue
                 frame = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
+                # Se guarda ANTES de decidir: si este candidato acaba yendo al VLM,
+                # la tira temporal necesita también los que vinieron antes.
+                _recordar_frame(msg.get("camera_name", "?"), jpg)
                 rois = [tuple(r) for r in msg.get("rois", [])]
                 score, label, coords, por_etiqueta = scorer.score_detallado(frame, rois)
                 cam_bl = msg.get("blacklist")
@@ -384,7 +440,16 @@ def run_vlm(in_queue, distributed=False, stop_event=None, alert_pool=None):
                 # Para conceptos de OBJETO ("persona", "cuchillo") el recorte sigue
                 # siendo mejor: concentra resolución donde está la evidencia.
                 if normalize_word(label) in ABSTRACT_EVENTS:
-                    img_bytes = jpg
+                    # GRID TEMPORAL. Un disturbio o una pelea no se ven en un
+                    # fotograma suelto: hay gente de pie, humo, policía formada.
+                    # Medido, el VLM respondía "parece una manifestación controlada"
+                    # ante un disturbio real, y no se equivocaba con lo que veía.
+                    # Se le manda una tira de 2-3 fotogramas separados ~1 s dentro
+                    # de UNA sola imagen: la técnica está publicada (IG-VLM) y
+                    # conserva la información temporal a nivel de píxel, así que un
+                    # modelo que solo sabe mirar imágenes la aprovecha igual.
+                    # Cuesta unos cientos de tokens más, no una consulta más.
+                    img_bytes = _tira_temporal(msg) or jpg
                 else:
                     img_bytes = _crop_jpg(jpg, msg.get("coords"))
                 confirmed, reason = vlm_mod.judge(img_bytes, label)
