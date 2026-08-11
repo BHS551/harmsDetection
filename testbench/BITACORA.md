@@ -804,6 +804,125 @@ es más dura: **¿por qué sigue CLIP en el camino de decisión?** Cuesta CPU, c
 latencia y mide peor que el MOG2 que ya corre. Antes de sustituirlo, medir la
 cascada SIN él: es una línea base que nunca se ha medido y que ahora sé calcular.
 
+## Ciclo 9 — YOLOE sustituye a CLIP en la capa 1
+
+### 1. Estado de partida
+
+El ciclo 8 dejó medido que CLIP restaba: 55,49% de AUC contra 58,35% del
+movimiento a secas. La propuesta era usar CLIP y YOLO-World a la vez y
+reconciliar; se investigó y se midió antes de construir nada.
+
+### 2. ¿Sirve CLIP si se le pregunta mejor?
+
+Se probaron sondas de atributo concretas en lugar de la pregunta abstracta
+("¿hay personas?", "¿posición de golpe?", "¿alguien en el suelo?", "¿cosas en
+el piso?", "¿encapuchados?") sobre 119 vídeos y 400.622 fotogramas:
+
+| sonda | AUC | correlación con "personas" |
+|---|---|---|
+| objetos_suelo | 62,48% | r=0,75 REDUNDANTE |
+| personas | 61,35% | — |
+| mov (gratis) | 60,93% | referencia |
+| golpe | 60,55% | r=0,69 REDUNDANTE |
+| caida | 55,81% | r=-0,06 independiente |
+| encapuchado | 51,47% | r=0,24 independiente pero al azar |
+
+Combinación entrenada sobre vídeos distintos (partición POR VÍDEO), 12
+particiones aleatorias: **+1,08 ± 1,16 puntos** sobre el movimiento. La ventaja
+es menor que su desviación; no se distingue de cero.
+
+**Por qué falla, medido**: las dos sondas que mejor puntúan son redundantes con
+"¿hay personas?". Los prompts de `golpe` contienen la palabra *person* en todos.
+CLIP responde a los SUSTANTIVOS, no al verbo — el efecto bolsa de palabras
+documentado (ARO: 63% en atributos, 59% en relaciones; Winoground: azar).
+
+Conclusión: refinar los prompts no salva a CLIP. Se descarta como votante.
+
+### 3. Investigación
+
+- **YOLOE** supera a YOLO-World en +10/+11 AP en LVIS y va 1,4x más rápido.
+  Usa MobileCLIP por dentro: misma semántica abierta, pero OBLIGADO a localizar.
+- **AnyAnomaly** (WACV 2026, con código): pasarle contexto estructurado al VLM
+  en vez del fotograma crudo da +9,88% y +13,65% sobre su línea base.
+- **Paza**: filtro puramente geométrico (dwell 3s, proximidad rho=0,3),
+  precisión 89,5%, especificidad 92,8%. Sin semántica.
+
+### 4. Medición en la instancia real (`m7i-flex.large`, fotogramas 1920x1080)
+
+| motor | ms/frame | fps |
+|---|---|---|
+| yoloe-11s (texto) | **242,5** | **4,12** |
+| CLIP ViT-B/32 (3 ROIs) | 304,5 | 3,28 |
+
+YOLOE es un 20% MÁS RÁPIDO que CLIP. El tiempo es plano con la resolución
+porque ultralytics reescala internamente a 640.
+
+**El modo sin prompt (4.585 clases) es inservible**: sobre CCTV devuelve
+"bamboo forest", "pilgrim", "chicken coop", "magician". Solo se usa el modo con
+vocabulario corto y dirigido, que además va al doble de velocidad.
+
+### 5. Validación offline ANTES de desplegar (119 vídeos, 400.622 fotogramas)
+
+```
+CLIP (produccion)        58,71%
+YOLOE (nuevo)            62,62%    +3,91 sobre CLIP   +1,69 sobre movimiento
+movimiento MOG2          60,93%
+```
+
+Primer motor de capa 1 que supera al movimiento. Por clase:
+
+| clase | n | YOLOE | CLIP | delta |
+|---|---|---|---|---|
+| Assault | 3 | 92,65% | 86,14% | +6,51 |
+| Robbery | 5 | 66,79% | 58,30% | **+8,49** |
+| Vandalism | 5 | 64,16% | 65,03% | -0,87 |
+| Burglary | 13 | 61,50% | 58,07% | +3,43 |
+| Shoplifting | 21 | 58,18% | 55,27% | +2,91 |
+| Fighting | 5 | 53,11% | 58,71% | **-5,60** |
+| Stealing | 5 | 51,25% | 44,10% | +7,15 |
+| Abuse | 2 | 48,96% | 57,30% | -8,34 |
+
+Fighting empeora por causa identificada: la regla de violencia exige detectar
+DOS personas y a 320x240 YOLOE suele encontrar una.
+
+### 6. Diseño desplegado
+
+`cascade/yoloe_scorer.py` es un reemplazo directo de `ClipScorer` (mismos
+métodos y atributo `labels`). YOLOE detecta OBJETOS con caja y confianza; los
+eventos abstractos NO se inventan: se derivan de evidencia geométrica y su papel
+es disparar la CONSULTA al VLM, no la alerta.
+
+- violencia: >=2 personas Y próximas (rho=0,3, el parámetro de Paza)
+- robos: persona + objeto de interés (cuchillo/arma/mochila)
+- caidas: las sigue resolviendo `pose.py` por geometría, que es mejor
+
+Conmutable sin desplegar: `HEIMDALL_MOTOR=clip` restaura el motor anterior.
+CLIP sigue en el código, solo cede el puesto.
+
+Umbrales: son CONFIANZAS de detección (0-1), no márgenes de CLIP (0,02-0,15).
+Reutilizar los de CLIP habría disparado con todo.
+
+### 7. Aprendizajes
+
+- **Un backtick en un comentario tumbó el despliegue.** El UserData de
+  HeimdalManager vive en una plantilla de JS; escribir `mobileclip_blt.ts` con
+  comillas invertidas cerró la cadena. Lo detectó `node --check` antes de subir.
+- **Verificar que el motor nuevo se USA, no solo que no falla.** Se comprobó en
+  el log del worker (`[capa1] motor = YoloeScorer`) que no cayó al fallback de
+  CLIP en silencio. Es el tercer ciclo con esta misma lección.
+- **La medición cara va antes del despliegue, no después.** El +3,91 se supo con
+  el sistema aún en producción con CLIP.
+
+### Pendientes de este ciclo
+
+- El +1,69 sobre movimiento es UNA partición, sin barras de error (a diferencia
+  del experimento de sondas, que sí las tiene). Repetir con varias.
+- La regla de robo (persona + objeto) es una heurística sin validar por
+  separado: puede subir el gasto de Mimir. Medir la tasa de alertas.
+- Arreglar la regla de violencia para no exigir 2 detecciones de persona.
+
+---
+
 ### Pendiente
 
 - Línea base sin CLIP (movimiento -> VLM directo), en banco y en benchmark.

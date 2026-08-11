@@ -1,0 +1,19 @@
+videos 119 | fotogramas 400,622 | anomalos 12.1%
+
+motor de capa 1                               AUC
+CLIP (produccion actual)                   58.71%
+YOLOE (nuevo)                              62.62%
+movimiento MOG2 (gratis)                   60.93%
+
+YOLOE vs CLIP: +3.91   YOLOE vs movimiento: +1.69
+
+clase              n    YOLOE     CLIP   delta
+Abuse              2   48.96%   57.30%   -8.34
+Assault            3   92.65%   86.14%   +6.51
+Burglary          13   61.50%   58.07%   +3.43
+Fighting           5   53.11%   58.71%   -5.60
+Normal            60     n/d      n/d
+Robbery            5   66.79%   58.30%   +8.49
+Shoplifting       21   58.18%   55.27%   +2.91
+Stealing           5   51.25%   44.10%   +7.15
+Vandalism          5   64.16%   65.03%   -0.87

@@ -40,8 +40,30 @@ def load_context(path):
         return json.load(f)
 
 
+# Motor de la capa 1. CLIP mide 55,49% de AUC sobre el test de UCF-Crime, por
+# DEBAJO del 58,35% del movimiento a secas; YOLOE ocupa su puesto y además es un
+# 20% más rápido (242 ms/frame contra 305). Se deja conmutable por entorno para
+# poder volver atrás sin desplegar: HEIMDALL_MOTOR=clip restaura el anterior.
+MOTOR = os.environ.get("HEIMDALL_MOTOR", "yoloe").strip().lower()
+
+
+def _clase_scorer():
+    if MOTOR == "clip":
+        return ClipScorer
+    try:
+        from yoloe_scorer import YoloeScorer
+        return YoloeScorer
+    except Exception as e:
+        # Si YOLOE no está disponible, seguir con CLIP es peor que nada pero es
+        # mejor que un worker que no arranca. Se registra bien alto.
+        print(f"[capa1] YOLOE no importable ({type(e).__name__}: {e}); se usa CLIP")
+        return ClipScorer
+
+
 def build_scorer(ctx):
-    return ClipScorer(
+    Scorer = _clase_scorer()
+    print(f"[capa1] motor = {Scorer.__name__}")
+    return Scorer(
         blacklist=ctx.get("detection_blacklist") or ["person"],
         distractor_prompts=ctx.get("distractor_prompts"),
         thresholds=ctx.get("thresholds"),
@@ -140,7 +162,7 @@ def run_analysis(ctx):
     """ANALYSIS BOX compartida: CLIP + VLM consumiendo SQS. Watchdog: se auto-apaga
     tras `idle_shutdown_seconds` (2h por defecto) sin candidatos; cada lote renueva el
     timer. Los mensajes en vuelo no se pierden: SQS los re-entrega al despertar."""
-    scorer = ClipScorer(blacklist=ctx.get("universal_concepts") or UNIVERSAL_CONCEPTS)
+    scorer = _clase_scorer()(blacklist=ctx.get("universal_concepts") or UNIVERSAL_CONCEPTS)
     cand = SqsQueue(os.environ["HEIMDALL_CANDIDATE_QUEUE_URL"])
     vq = SqsQueue(os.environ["HEIMDALL_VLM_QUEUE_URL"])
     alert_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)

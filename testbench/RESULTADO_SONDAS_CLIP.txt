@@ -1,0 +1,25 @@
+videos 119 | {'Abuse': 2, 'Assault': 3, 'Burglary': 13, 'Fighting': 5, 'Normal': 60, 'Robbery': 5, 'Shoplifting': 21, 'Stealing': 5, 'Vandalism': 5}
+fotogramas 400,622 | anomalos 12.1%
+
+=== AUC de cada sonda (conjunto completo) ===
+  personas          61.35%
+  golpe             60.55%
+  caida             55.81%
+  objetos_suelo     62.48%
+  encapuchado       51.47%
+  mov               60.93%
+
+=== Correlacion con 'personas' (¿mide algo nuevo?) ===
+  personas         r= 1.00  REDUNDANTE
+  golpe            r= 0.69  REDUNDANTE
+  caida            r=-0.06  independiente
+  objetos_suelo    r= 0.75  REDUNDANTE
+  encapuchado      r= 0.24  independiente
+
+=== ¿Alguna COMBINACION supera al movimiento? (particion por video) ===
+  entreno 59 videos / prueba 60 videos
+  solo movimiento (sin entrenar)     AUC =  65.08%
+  solo movimiento (entrenado)        AUC =  65.08%
+  5 sondas CLIP                      AUC =  66.82%
+  5 sondas CLIP + movimiento         AUC =  64.39%
+  movimiento + caida (la independiente) AUC =  57.38%
