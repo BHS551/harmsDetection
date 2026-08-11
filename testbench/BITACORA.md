@@ -13,6 +13,18 @@ Formato: una entrada por ciclo. Cada ciclo sigue estos pasos:
 5. Ejecutar los cambios.
 6. Volver a pasar el set de pruebas.
 7. Anotar aquí estrategia, resultados y aprendizajes.
+8. **Anotar las fuentes usadas**, con enlace, en la sección «Fuentes» del final.
+
+## Regla de fuentes (obligatoria desde 2026-08-11)
+
+1. **Toda afirmación sobre el estado del arte va con fuente enlazada.** Nada de
+   memoria, nada de «se sabe que». Si no hay enlace, no se escribe.
+2. **Toda fuente usada se anota** en «Fuentes», aunque acabe descartada: saber qué
+   ya se miró evita repetir la búsqueda.
+3. **Lo no verificado se marca como tal**, con `⚠ sin verificar`. Una cifra sin
+   fuente es una hipótesis, no un dato, y no puede sostener una decisión.
+4. Aplica también a lo ya escrito: las cifras de ciclos anteriores que entraron sin
+   fuente están marcadas abajo y pendientes de verificar.
 
 ---
 
@@ -341,3 +353,263 @@ puerta sirve poco" sino "sirve poco cuando siempre hay gente".
    incidente plausible en una escena de incidente, en vez de exigir la exacta.
 4. **Medir la curva coste/latencia** de `VLM_MIN_INTERVAL` (6 s hoy) para que la
    elección del punto sea del usuario y no del implementador.
+
+---
+
+## Revisión de literatura — qué de esto ya estaba publicado (2026-08-11)
+
+Revisión hecha antes del ciclo 4, para saber qué de lo que creíamos hallazgo
+propio ya existe. **El resultado es mayormente negativo y conviene tenerlo escrito.**
+
+### 1. «Preguntar por el rastro, no por el acto» — no es nuestro
+
+El principio del ciclo 2 (preguntar por el ESTADO persistente en vez del acto en
+curso) está publicado en tres frentes:
+
+- **Caídas: prior art de décadas.** La detección por postura de yacimiento
+  («lying pose», «floor occupancy») es un subcampo establecido. La formulación
+  publicada es casi literal a la nuestra: *«unlike detecting the falling event,
+  the clinical requirement after a fall is frequently not the precise
+  classification of the dynamic event, but the reliable detection of the post-fall
+  state: an individual lying quasi-statically on the floor»* ([F1], [F2]).
+- **Robos e incendios: anticipado ~10 meses.** ASK-HINT [F3] usa prompts como
+  *«Do you see forced entry, vandalism, or deliberate fire?»* y
+  *«Is there evidence of weapons, force, or law enforcement?»*, que es el paso 1
+  del ciclo 4 palabra por palabra.
+- **Matiz que sobrevive:** ASK-HINT se autodescribe como *action-centric* y mezcla
+  prompts de acto y de rastro **sin teorizar la distinción**, y declara en sus
+  limitaciones que *«ignore temporal modeling»*. Nadie ha aislado el principio
+  como principio. Es contribución de encuadre, no descubrimiento.
+
+### 2. La arquitectura en cascada — tampoco es nuestra
+
+- **Cerberus** [F4]: cascada de dos etapas, filtro de movimiento barato → VLM caro,
+  explícitamente por coste y tiempo real. 151,79× de aceleración, 97,2% de
+  precisión relativa, 57,68 fps en una L40S.
+- **SlowFastVAD** [F5]: detector simple + VLM con RAG. **MemoVAD** [F6]: variante
+  eficiente en edge.
+- **Zero-Shot Retail Theft Detection** [F7]: zero-shot + orquestación de modelos de
+  visión como alternativa coste-efectiva a sistemas entrenados. Es nuestro mismo
+  planteamiento. **Lectura obligatoria antes de escribir nada.**
+
+**Y el precedente de fondo es mucho más antiguo que Cerberus.** Existe un subcampo
+entero de *video analytics systems* (VLDB, OSDI, NSDI, SIGCOMM) que lleva desde 2017
+haciendo cascadas para abaratar inferencia sobre vídeo:
+
+- **NoScope** (VLDB 2017) [L5]: cascada de modelos especializados + detectores de
+  diferencia antes del modelo caro. **265-15.500× de aceleración.** Es nuestra
+  arquitectura, nueve años antes y con evaluación más rigurosa.
+- **Focus** (OSDI 2018) [L6]: reduce el coste de ingesta **48× de media, hasta 92×**.
+- **Reducto**: filtrado en la propia cámara. **Ekya** (NSDI 2022) [L7]: aprendizaje
+  continuo en servidores edge. **RedunCut** [L8]: muestreo dirigido por medición.
+
+### 3. El coste en moneda — CORRECCIÓN: tampoco es un hueco
+
+Esto se afirmó primero al revés y estaba mal. **El coste no es un terreno sin pisar:
+es la métrica central de ese subcampo.**
+
+- NoScope [L5] se plantea explícitamente como reducción de coste («up to three orders
+  of magnitude»), con el marco de que un detector en tiempo real exige una GPU de
+  4.000 USD.
+- **Microsoft Rocket** [L1][L2] es una plataforma edge+cloud **desplegada sobre
+  cámaras de tráfico reales con la ciudad de Bellevue**, con informe de caso [L3] y
+  código abierto [L4]. El TCO es objetivo declarado del proyecto.
+- Hay cifras en dólares publicadas [L10]: ~6,80 USD/cámara/mes en L4 propia, ~24 en
+  L4 alquilada, y una API cloud por minuto sale ~180× más cara que GPU alquilada.
+
+**Conclusión honesta: no hay ninguna ventaja estructural nuestra.** Los laboratorios
+tienen despliegues reales a escala de ciudad, bancos verificados y contabilidad de
+costes más seria. Lo único propio es haberlo medido sobre nuestra pila, que sirve
+como trabajo de grado y no como contribución.
+
+### Líneas base para comparar (esto sí resuelve un agujero)
+
+La revisión aporta lo que faltaba para poder compararnos con alguien:
+
+| método | UCF-Crime (AUC) | XD-Violence (AUC) |
+|---|---|---|
+| ASK-HINT [F3] | 89,83% | 90,31% |
+| VERA [F9] | 86,55% | 88,26% |
+
+Benchmarks estándar del área: **UCF-Crime**, **XD-Violence**, **RWF-2000** [F11],
+Avenue, SHTech, NWPU-Campus. Nuestro banco de 10 escenas propias no es comparable
+con ninguno de ellos hasta que corramos sobre uno estándar.
+
+### Aprendizaje
+
+Convergencia independiente: el principio del rastro se dedujo aquí leyendo los
+propios logs del VLM, sin conocer ASK-HINT, publicado dos meses antes. No da
+novedad. Sí valida el método de trabajo — y es exactamente el tipo de cosa que
+esta bitácora existe para registrar.
+
+**Error de método que causó cuatro ciclos de redescubrimiento:** el paso 3 del
+protocolo («investigar el estado del arte») se ejecutó buscando **por problema**
+(violencia, caídas) y no **por método** (VLM en cascada, video analytics systems).
+Por eso se encontró CUE-Net y YOLOv8-Pose, y no NoScope, Cerberus ni ASK-HINT.
+**A partir de ahora, buscar siempre por ambos ejes.**
+
+---
+
+## La escalera — dónde está SkyEye respecto al techo
+
+Mapa del campo, de abajo arriba. Sirve para situarse honestamente y para no
+confundir «no lo he hecho» con «no está hecho».
+
+| nivel | qué es | referencias |
+|---|---|---|
+| **0 — SkyEye** | cascada reactiva; VLM sobre fotogramas sueltos | [L5] (2017) |
+| **1** | razonamiento temporal explícito sobre la secuencia | [T1][T2][T3][T4][T5] |
+| **2** | streaming always-on con memoria de largo plazo | [S1]-[S6] |
+| **3** | **anticipación**: predecir la anomalía antes de que ocurra | [A1] |
+| **4** | cambio de sustrato: sensor de eventos + cómputo neuromórfico | [N1]-[N4] |
+
+Notas que conviene no olvidar:
+
+- **Nivel 1** incluye *HiProbe-VAD* [T5], que lee los **estados ocultos** del VLM en
+  vez de su respuesta de texto. Mecanismo completamente distinto al nuestro.
+- **Nivel 2 contiene nuestra mejor idea, hecha mejor.** *StreamMind* [S6] usa una
+  *Cognition Gate* ligera que vigila el flujo y solo dispara el LLM pesado cuando
+  pasa algo relevante, **a 100 FPS**. Es la puerta de personas + el regulador de
+  caudal del ciclo 3, en el mismo concepto.
+- **Nivel 3** [A1] cambia el planteamiento, no lo mejora: aprende la cinemática
+  normal con un modelo del mundo tipo JEPA y avisa de la trayectoria **antes** de que
+  haya alguien en el suelo.
+- **Nivel 4 disuelve el problema en lugar de optimizarlo.** Un sensor de eventos
+  (DVS) solo genera datos cuando cambia la luminancia [N1][N2]: la capa 0 entera pasa
+  al silicio. Con chips neuromórficos en el propio sensor (Loihi 2, NorthPole) el
+  consumo baja a **milivatios** [N3]. Toda esta tesis trata de no pagar por mirar
+  fotogramas aburridos; una cámara de eventos no los produce.
+
+**Barra actual en los benchmarks del área** (⚠ fuente de industria, no revisada por
+pares [B1]): BERT+RTFM ~98,5% AUC en ShanghaiTech; AnomalyCLIP ~90,32% en UCF-Crime;
+VadCLIP++ ~90,5% AP en XD-Violence. Orientativo, no citable.
+
+---
+
+## Fuentes
+
+Todas verificadas el 2026-08-11 salvo lo marcado `⚠ sin verificar`.
+
+### Estado del arte — VLM y detección de anomalías en vídeo
+
+- **[F3] ASK-HINT** — *Unlocking Vision-Language Models for Video Anomaly Detection
+  via Fine-Grained Prompting*, arXiv 2510.02155 (oct. 2025).
+  https://arxiv.org/html/2510.02155v1
+- **[F4] Cerberus** — *Real-Time Video Anomaly Detection via Cascaded Vision-Language
+  Models*, arXiv 2510.16290 (oct. 2025). https://arxiv.org/pdf/2510.16290
+- **[F5] SlowFastVAD** — arXiv 2504.10320. https://arxiv.org/pdf/2504.10320
+- **[F6] MemoVAD** — arXiv 2606.07669. https://arxiv.org/pdf/2606.07669
+- **[F7] Zero-Shot Retail Theft Detection via Orchestrated Vision Models** —
+  arXiv 2604.14846. https://arxiv.org/pdf/2604.14846
+- **[F9] VERA** — *Explainable Video Anomaly Detection via Verbalized Learning of
+  Vision-Language Models*, arXiv 2412.01095. https://arxiv.org/pdf/2412.01095
+- **[F10] Video Anomaly Detection in 10 Years: A Survey and Outlook** —
+  arXiv 2405.19387. https://arxiv.org/pdf/2405.19387
+- **[F13] RedunCut** — *Measurement-Driven Sampling and Accuracy Performance
+  Modeling for Low-Cost Live Video Analytics*, arXiv 2512.24386.
+  https://arxiv.org/pdf/2512.24386
+
+### Detección de caídas por estado (no por evento)
+
+- **[F1]** *Reliable Quasi-Static Post-Fall Floor-Occupancy Detection Using Low-Cost
+  Millimetre-Wave Radar*, arXiv 2601.17710. https://arxiv.org/pdf/2601.17710
+- **[F2]** *Fall Detection System-Based Posture-Recognition for Indoor Environments*,
+  PMC8321307. https://pmc.ncbi.nlm.nih.gov/articles/PMC8321307/
+
+### Violencia — línea base citada desde el ciclo 1
+
+- **[F11] CUE-Net** — Senadeera et al., *Violence Detection Video Analytics with
+  Spatial Cropping, Enhanced UniformerV2 and Modified Efficient Additive
+  Attention*, CVPRW 2024 / arXiv 2404.18952. **94,00% en RWF-2000**, 99,50% en
+  RLVS. https://arxiv.org/abs/2404.18952
+  → confirma la cifra que el ciclo 1 citaba sin fuente.
+- **[F12] RWF-2000** — *An Open Large Scale Video Database for Violence Detection*,
+  arXiv 1911.05913. https://arxiv.org/abs/1911.05913
+
+### Coste (industria, no revisado por pares)
+
+- **[F8]** Fora Soft, *Video Analytics Cost per Camera: Edge vs Cloud Math*.
+  https://www.forasoft.com/learn/video-surveillance/articles-vms/economics-of-analytics-bandwidth-compute-storage
+
+### Marco metodológico (para el trabajo de grado)
+
+- **[F14] Hevner, March, Park & Ram (2004)** — *Design Science in Information Systems
+  Research*, MIS Quarterly 28(1), 75-105. El ciclo build-evaluate de esta bitácora
+  es DSR. https://aisel.aisnet.org/misq/vol28/iss1/6/
+- **[F15] Manual de Frascati 2015 (OCDE)** — tipología I+D: investigación básica /
+  aplicada / desarrollo experimental. SkyEye es **desarrollo experimental**
+  («trabajos sistemáticos fundamentados en los conocimientos existentes […]
+  dirigidos a […] mejorar considerablemente los que ya existen»).
+  https://www.oecd.org/content/dam/oecd/es/publications/reports/2015/10/frascati-manual-2015_g1g57dcb/9789264310681-es.pdf
+
+### Video analytics systems — el precedente de fondo (subcampo VLDB/OSDI/NSDI)
+
+- **[L1]** Microsoft Rocket, plataforma edge+cloud — https://www.microsoft.com/en-us/research/video/microsoft-rocket-hybrid-edge-cloud-video-analytics-platform/
+- **[L2]** Microsoft Rocket for Live Video Analytics — https://www.microsoft.com/en-us/research/project/live-video-analytics/
+- **[L3]** Traffic Video Analytics — Case Study Report (ciudad de Bellevue) — https://www.microsoft.com/en-us/research/publication/traffic-video-analytics-case-study-report/
+- **[L4]** Rocket, código abierto — https://github.com/microsoft/Microsoft-Rocket-Video-Analytics-Platform
+- **[L5]** **NoScope**, VLDB 2017 — https://www.vldb.org/pvldb/vol10/p1586-kang.pdf
+- **[L6]** **Focus**, OSDI 2018 — https://dl.acm.org/doi/10.1145/3301293.3302366
+- **[L7]** **Ekya**, NSDI 2022 — https://www.usenix.org/system/files/nsdi22spring_prepub_bhardwaj.pdf
+- **[L8]** RedunCut, arXiv 2512.24386 — https://arxiv.org/html/2512.24386
+- **[L9]** Empowering Agentic Video Analytics Systems with VLMs, arXiv 2505.00254 — https://arxiv.org/html/2505.00254v3
+- **[L10]** ⚠ industria — Video Analytics Cost per Camera: Edge vs Cloud Math — https://www.forasoft.com/learn/video-surveillance/articles-vms/economics-of-analytics-bandwidth-compute-storage
+
+### Nivel 1 — razonamiento temporal
+
+- **[T1]** Chain-of-Frames, CVPR 2026 — https://openaccess.thecvf.com/content/CVPR2026/html/Ghazanfari_Chain-of-Frames_Advancing_Video_Understanding_in_Multimodal_LLMs_via_Frame-Aware_Reasoning_CVPR_2026_paper.html
+- **[T2]** MOSS-ChatV, arXiv 2509.21113 — https://arxiv.org/pdf/2509.21113
+- **[T3]** TimeLogic Challenge @ CVPR 2026, arXiv 2606.01631 — https://arxiv.org/html/2606.01631v1
+- **[T4]** Vad-R1, arXiv 2505.19877 — https://arxiv.org/pdf/2505.19877
+- **[T5]** HiProbe-VAD (probing de estados ocultos), arXiv 2507.17394 — https://arxiv.org/pdf/2507.17394
+
+### Nivel 2 — streaming always-on con memoria
+
+- **[S1]** LiveStarPro, arXiv 2606.17798 — https://arxiv.org/pdf/2606.17798
+- **[S2]** Visual Agentic Memory, arXiv 2605.16481 — https://arxiv.org/pdf/2605.16481
+- **[S3]** ViCoStream (>100 FPS), arXiv 2606.19849 — https://arxiv.org/pdf/2606.19849
+- **[S4]** Dispider, arXiv 2501.03218 — https://arxiv.org/pdf/2501.03218
+- **[S5]** Awesome-Streaming-Video-Understanding (lista curada) — https://github.com/sotayang/Awesome-Streaming-Video-Understanding
+- **[S6]** **StreamMind** (Cognition Gate, 100 FPS) — vía [S5] y https://www.emergentmind.com/topics/real-time-streaming-video-llm
+
+### Nivel 3 — anticipación
+
+- **[A1]** Latent Clarity: World-Model Kinematics for Video Anomaly Anticipation, arXiv 2607.03558 (jul. 2026) — https://arxiv.org/pdf/2607.03558
+
+### Nivel 4 — sensor de eventos y cómputo neuromórfico
+
+- **[N1]** Event Cameras 2026 (Prophesee, Sony, iniVation) — https://internet-pros.com/blog/event-cameras-neuromorphic-vision-sensors-2026/
+- **[N2]** US12413869B2 — Low-power always-on event-based vision sensor — https://patents.google.com/patent/US12413869
+- **[N3]** Neuromorphic Event-Based Vision Sensor Patents 2026 — https://www.patsnap.com/resources/blog/rd-blog/neuromorphic-event-based-vision-sensor-patents-2026/
+- **[N4]** EvAn: Neuromorphic Event-Based Sparse Anomaly Detection — https://www.ncbi.nlm.nih.gov/pmc/articles/PMC8358807/
+
+### Problemas declarados abiertos por el campo
+
+- **[E1]** Efficient Video Intelligence in 2026 — https://v-chandra.github.io/efficient-video-intelligence/
+  → *"open-set 'show me anything anomalous' remains unsolved"*; y la brecha de
+  evaluación en producción («closed-loop methodology lags benchmark accuracy by a
+  wide margin»). Abierto **para el campo entero**, no un hueco reservado a nadie.
+- **[E2]** From Benchmarks to Reality: VAND 3.0 Challenge, arXiv 2509.17615 — https://arxiv.org/abs/2509.17615
+- **[B1]** ⚠ industria — Top Anomaly Detection Models for Video Surveillance (2026) — https://www.forasoft.com/blog/article/anomaly-detection-models-video-surveillance
+
+### ⚠ Pendientes de verificar — citadas en ciclos anteriores sin fuente
+
+Entraron de memoria y **no pueden sostener una decisión** hasta tener enlace:
+
+| ciclo | afirmación | estado |
+|---|---|---|
+| 1 | global+local supera a local solo (45,94 vs 42,88) | ⚠ sin verificar |
+| 1 | GCN sobre esqueleto, ~98% de precisión en caídas | ⚠ sin verificar |
+| 1 | muestreo adaptativo: ~53% menos llamadas | ⚠ sin verificar |
+| 3 | YOLOv8-Pose: 92-98% de precisión en caídas sin VLM | ⚠ sin verificar |
+
+### Afirmaciones retiradas por falsas
+
+Se anotan para no volver a cometerlas. Las tres se hicieron sin verificar y las tres
+inflaban la posición del proyecto:
+
+| afirmación | realidad | fuente |
+|---|---|---|
+| «nadie publica el coste» | el coste es la métrica central del subcampo | [L5][L6][L1] |
+| «el principio del rastro no está explorado» | publicado en caídas y en VLM-VAD | [F1][F2][F3] |
+| «los laboratorios no tienen despliegues ni bancos» | despliegues a escala de ciudad | [L1][L3] |
