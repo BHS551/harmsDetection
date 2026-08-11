@@ -718,29 +718,95 @@ todos los conceptos pero luego **filtra por los de la cámara**, así que con es
 configuración ningún robo ni pelea puede alertar jamás. Cualquier medición de
 robos/violencia hecha sin reconfigurar antes no es interpretable.
 
-### Resultado parcial (41/290 vídeos, todos anómalos — provisional)
+### RESULTADO — 290/290 vídeos, 1.111.808 fotogramas (10,3 h), cero errores
 
 ```
-capa 0 sola (movimiento MOG2)      AUC = 64,24%
-capa 1 sola (margen CLIP)          AUC = 61,60%
-cascada capa 0 + capa 1            AUC = 61,65%
+capa 0 sola (movimiento MOG2)      AUC = 58,35%
+capa 1 sola (margen CLIP)          AUC = 55,49%
+cascada capa 0 + capa 1            AUC = 55,67%
+solo escenarios objetivo           AUC = 56,58%
 ```
 
-**CLIP puntúa PEOR que el movimiento a secas, y combinarlos no mejora ninguno.**
-Con los 150 vídeos normales aún fuera, el número se moverá; pero si aguanta, la
-pregunta del paso 3 deja de ser "sustituir CLIP por YOLO-World" y pasa a ser
-**qué está aportando CLIP además de coste de CPU**.
+**El azar es 50%.** La parte de la cascada que corre en CPU está 5,7 puntos por
+encima de una moneda. La literatura: LAVAD 80,28 · Flashback 87,29 · π-VAD 90,33.
 
-Coincide con lo ya medido por otra vía: margen 0,089 para "persona" en una montaña
-vacía contra 0,063 de mediana en aciertos reales. Ahora sobre 200.000 fotogramas
-en vez de una anécdota.
+**CLIP puntúa PEOR que el movimiento a secas** (55,49 vs 58,35) y combinarlos no
+mejora a ninguno. No es ruido: es un millón de fotogramas. Coincide con lo ya
+medido por otra vía (margen 0,089 para "persona" en una montaña vacía contra
+0,063 de mediana en aciertos reales).
 
-Desglose por clase (provisional): **Assault 86,14%**, Arrest 44,53% (bajo el azar).
-La cascada no es uniformemente mala: es buena en agresión física y ciega en otras.
+Al añadir los 150 normales TODO bajó (capa 0: 60,76 -> 58,35). Más metraje sin
+incidente, más ocasiones de equivocarse: el parcial era optimista.
+
+| punto de operación (umbral 0.02) | |
+|---|---|
+| falsas alarmas / hora de vídeo normal | **23.219** |
+| recall por fotograma | 28,6% |
+| tramos de incidente tocados | **136/156 (87%)** |
+| latencia media hasta la alerta | **2,5 s** |
+
+Como PUERTA la cascada funciona: deja pasar el 87% de los incidentes, y en 2,5 s.
+Lo que no hace es FILTRAR. Eso reordena el diagnóstico del coste: **la cascada no
+abarata Mimir eligiendo bien, lo abarata estrangulando el caudal con el throttle
+de 6 s.** Quien discrimina es el VLM, y por eso cuesta lo que cuesta.
+
+Por clase (n pequeño en casi todas las del producto; el 86,14% de Assault es con
+TRES vídeos y no sostiene ninguna conclusión):
+
+| clase | n | AUC |
+|---|---|---|
+| Assault | 3 | 86,14% |
+| RoadAccidents | 23 | 71,57% |
+| Vandalism | 5 | 65,03% |
+| Explosion | 21 | 63,27% |
+| Fighting | 5 | 58,71% |
+| Robbery | 5 | 58,30% |
+| Burglary | 13 | 58,07% |
+| Shooting | 23 | 58,16% |
+| Shoplifting | 21 | 55,27% |
+| Stealing | 5 | 44,10% |
+| Arrest | 5 | 44,53% |
+
+Lo más fiable de los escenarios objetivo es Shoplifting (n=21): **55,27%**.
+
+### Confirmación independiente en vivo (mock, camino de producción completo)
+
+Seis escenas de UCF-Crime por RTSP -> worker -> CLIP -> VLM -> DynamoDB, con la
+cámara reconfigurada a `robos, violencia, caidas, persona`:
+
+| escena | esperado | detectado | veredicto |
+|---|---|---|---|
+| ucf_asalto | violencia | persona x6 | PERDIDO |
+| ucf_pelea | violencia | persona x5 | PERDIDO |
+| ucf_robo | robos | persona x4 | PERDIDO |
+| ucf_hurto_tienda | robos | persona x6 | PERDIDO |
+| ucf_robo_vehiculo | robos | persona x7 | PERDIDO |
+| ucf_normal | (nada) | (nada) | ACIERTO |
+
+**1/6.** Cero eventos de robo o violencia en cinco escenas de robo y violencia.
+Todo llega `via=clip` y todo dice `persona`.
+
+Dos mediciones independientes —un millón de fotogramas offline y el sistema
+desplegado en vivo— dicen lo mismo: **CLIP detecta que hay gente, no qué pasa.**
+
+### Salvedades
+
+1. **No mide el sistema completo**: no hay VLM en el benchmark. El 55,67%
+   describe la parte barata, no el veredicto final.
+2. **Muestras pequeñas** en casi todas las clases del producto (n entre 2 y 5).
+3. **Es UCF-Crime, no cámaras reales**, y el audit cross-dataset (0,704 -> 0,499)
+   dice que estos números tampoco transfieren.
+
+### Qué cambia del plan
+
+El paso 3 era "sustituir CLIP por YOLO-World". Con este dato la pregunta correcta
+es más dura: **¿por qué sigue CLIP en el camino de decisión?** Cuesta CPU, cuesta
+latencia y mide peor que el MOG2 que ya corre. Antes de sustituirlo, medir la
+cascada SIN él: es una línea base que nunca se ha medido y que ahora sé calcular.
 
 ### Pendiente
 
-- Cerrar el benchmark con los 290 y publicar AUC, FAR/hora y latencia definitivos.
+- Línea base sin CLIP (movimiento -> VLM directo), en banco y en benchmark.
 - Medir el rendimiento de CLIP en `m7i-flex.large` (el AUC no depende del
   hardware, el coste sí).
-- Arreglar `MIN_MOTION_AREA` en producción como fracción del área.
+- Arreglar `MIN_MOTION_AREA` en producción como fracción del área, no en píxeles.

@@ -1,0 +1,34 @@
+vídeos puntuados: 290/290
+fotogramas totales: 1,111,808  (10.3 h de vídeo)
+fotogramas anómalos: 84,182 (7.6%)
+
+=== AUC a nivel de fotograma (protocolo UCF-Crime) ===
+  capa 0 sola (movimiento MOG2)      AUC = 58.35%
+  capa 1 sola (margen CLIP)          AUC = 55.49%
+  cascada capa 0 + capa 1            AUC = 55.67%
+
+=== Punto de operación (umbral 0.02, el de producción) ===
+  falsas alarmas por hora de vídeo normal: 23,219
+  recall a nivel de fotograma: 28.6%
+  tramos anómalos detectados: 136/156
+  latencia media hasta la alerta: 2.5 s
+
+=== Por clase (cascada completa) ===
+ *Abuse            n=  2  AUC =  57.30%
+  Arrest           n=  5  AUC =  44.53%
+  Arson            n=  9  AUC =  55.83%
+ *Assault          n=  3  AUC =  86.14%
+ *Burglary         n= 13  AUC =  58.07%
+  Explosion        n= 21  AUC =  63.27%
+ *Fighting         n=  5  AUC =  58.71%
+  Normal           n=150  n/d (sin fotogramas anómalos)
+  RoadAccidents    n= 23  AUC =  71.57%
+ *Robbery          n=  5  AUC =  58.30%
+  Shooting         n= 23  AUC =  58.16%
+ *Shoplifting      n= 21  AUC =  55.27%
+ *Stealing         n=  5  AUC =  44.10%
+ *Vandalism        n=  5  AUC =  65.03%
+
+  (*) clases que corresponden a los escenarios objetivo de SkyEye
+
+=== AUC solo escenarios objetivo + normales: 56.58% ===
