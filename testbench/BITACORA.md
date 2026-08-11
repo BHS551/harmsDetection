@@ -513,3 +513,86 @@ Lo aprendido sobre el recall, que acota lo que se puede esperar:
 4. **Vigilar el ritmo de alertas**: al resolver `persona` en local subió a ~98/h
    (antes 7,5/h), porque ya no pasa por el cuello de botella del VLM. El cooldown
    lo limita, pero conviene revisar si ese volumen es deseable para el usuario.
+
+---
+
+## Ciclo 7 — rediseño: YOLO propone, reglas temporales deciden, Mimir juzga
+
+Objetivo fijado por el usuario: ejecutar los pasos **uno a uno, midiendo entre
+cada uno**, para distinguir qué mueve la aguja y qué la perjudica.
+
+### 2. Revisión de lo ya hecho (lo que condiciona este ciclo)
+
+Seis ciclos dejaron una conclusión incómoda: **cada mejora daba coste o recall,
+nunca ambos**. Y una sospecha de fondo — que CLIP ya no se gana su sitio:
+
+| concepto | qué hace CLIP | qué funciona mejor |
+|---|---|---|
+| `persona` | margen 0.089 sobre montaña vacía; se solapa con los aciertos | YOLO (ciclo 6, demostrado) |
+| `caidas` | casi nunca la elige como ganadora | postura y seguimiento temporal |
+| `robos`, `violencia` | dispara con montañas y coches | solo el VLM, con contexto |
+| palabras propias | recibe la cadena en español literal | nada; falla por diseño |
+
+Lo único que CLIP aporta es **vocabulario abierto**, y eso YOLO-World también lo da.
+
+Hallazgo colateral: el repositorio ya tenía `tools/eval_yoloworld.py`, construido
+para comparar YOLO-World contra CLIP con AUC y tiempo de CPU. **El resultado no
+está registrado en ningún sitio.** Alguien se hizo esta misma pregunta, montó la
+herramienta y la respuesta se perdió. Es justo lo que esta bitácora evita.
+
+### 3. Investigación
+
+- **IG-VLM** (arXiv 2403.18406): componer varios fotogramas en UNA imagen en
+  rejilla conserva la información temporal a nivel de píxel y **supera a los
+  métodos existentes en 9 de 10 benchmarks** de vídeo, sin reentrenar nada.
+- **Caídas por regla temporal**: velocidad de descenso + cambio de ratio, sin
+  clasificador entrenado. Un trabajo publicado usa velocidad > 22 px/frame y
+  torso > 20°, y "ya caído" con torso > 50° o ratio > 1,25.
+- El techo real para violencia es un modelo de acción entrenado sobre vídeo
+  (VideoMAE, X3D) sobre RWF-2000: 94-99%. Requiere GPU y datos etiquetados, pero
+  no tiene coste por llamada.
+
+### 4. Plan por pasos, con medición entre cada uno
+
+0. Medir si la CPU aguanta YOLO con seguimiento. **Bloqueante.**
+1. Grid temporal para eventos abstractos.
+2. Seguimiento + regla temporal de caídas, escalando al VLM solo la franja dudosa.
+3. Sustituir CLIP por YOLO-World.
+
+### Paso 0 — medición de CPU ✓
+
+En `m7i-flex.large`, el mismo tipo que los workers, sobre fotogramas reales 1920x1080:
+
+| modelo | ms/frame | fps |
+|---|---|---|
+| `yolov8n-pose` (el que ya corre) | 68 | 14,6 |
+| `yolov8n` detección | 60 | 16,6 |
+| `yolov8n` @416 | 28 | **36,1** |
+| `yolov8s-worldv2` (vocab abierto) | 185 | **5,4** |
+
+**La CPU da de sobra.** Se necesitaban ≥4 fps y hasta el modelo más pesado llega a
+5,4. El seguimiento del paso 2 es viable *sin* renunciar al vocabulario abierto.
+
+Corrige un supuesto erróneo mío: estimé ~750 ms/frame extrapolando cifras de
+Raspberry Pi. **Me equivocaba por un factor de diez.** Un vCPU de servidor no se
+parece a una Pi y no debí extrapolar así.
+
+A 36 fps (@416) se abre algo no contemplado: analizar casi en continuo en vez de
+solo en ventanas de movimiento, lo que daría velocidades de caída mucho más fiables.
+
+### Paso 1 — grid temporal (implementado, medición en curso)
+
+`_historial` guarda los fotogramas recientes por cámara en la capa 1 —la única que
+los ve todos— y `_tira_temporal()` compone el actual con los de ~1 s y ~2 s antes
+en una sola imagen, en orden cronológico, solo para eventos abstractos.
+
+**Limitación detectada al revisar el propio código**: la capa de movimiento emite
+ráfagas de 10 fotogramas en 3 s y luego calla 15 s. Si el candidato que llega al
+VLM cae al principio de una ráfaga, los anteriores son de 15 s atrás y la
+tolerancia los rechaza con razón, cayendo al fotograma suelto. **La tira se compone
+solo parte de las veces, y no sé en qué proporción.**
+
+**Error de método, el mismo del ciclo 4**: `_tira_temporal` no deja rastro cuando
+funciona, solo cuando falla. Así que si el recall no sube no podré distinguir "la
+idea no sirve" de "la idea no llegó a probarse". En el paso 2, el registro de
+ejecución va ANTES que la lógica.
