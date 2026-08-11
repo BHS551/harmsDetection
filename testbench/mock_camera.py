@@ -115,6 +115,17 @@ def cmd_up():
         print(f"encendida: {ip}")
         return state_save(instance=inst["InstanceId"], ip=ip)
 
+    # El log de S3 es la señal de "lista", y sobrevive a la instancia que lo
+    # escribió. Si no se borra ANTES de arrancar, el "camara lista" de la corrida
+    # anterior se lee como si fuera de esta y `up` devuelve una cámara que aún
+    # está instalando ffmpeg. Ya ocurrió: dio por lista una instancia de 47 s con
+    # un log del día anterior. Borrarlo primero es lo que hace fiable la espera.
+    try:
+        s3.delete_object(Bucket=BUCKET, Key="testcam/status.log")
+    except Exception as e:
+        print(f"aviso: no se pudo borrar el log previo ({type(e).__name__}); "
+              "la espera podría leer un estado viejo")
+
     ami = boto3.client("ssm", region_name=REGION).get_parameter(Name=AMI_SSM)["Parameter"]["Value"]
     here = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(here, "camera_userdata.sh")) as fh:

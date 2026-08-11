@@ -646,3 +646,101 @@ apagó todo antes de obtener el dato.
    retrasó una verificación 14 minutos. Cada arranque de cámara lo paga.
 3. Solo entonces, el **paso 2** (seguimiento + regla temporal de caídas), con el
    registro de ejecución escrito ANTES que la lógica.
+
+---
+
+## Ciclo 8 — medirse contra la vara común (UCF-Crime)
+
+**Pregunta**: ¿cuánto vale la cascada comparada con la literatura? Hasta ahora el
+banco medía 10 escenas propias; ningún número era comparable con ningún paper,
+porque la cascada emite EVENTOS y los papers puntúan FOTOGRAMAS.
+
+### Lo que se montó
+
+- Los 290 vídeos de test de UCF-Crime con sus anotaciones temporales oficiales.
+  Bajados por **peticiones de rango HTTP** sobre los zips del espejo: **7,99 GB
+  en vez de los 29,8 GB** del dataset completo.
+- `benchmark_ucf.py`: modo de puntuación continua que reutiliza `MotionDetector`
+  y `ClipScorer` tal cual están desplegados, sin VLM (130.000 segmentos por
+  Bedrock sería inasumible). Reanudable por vídeo.
+- `analizar.py`: AUC por fotograma, FAR/hora, latencia hasta la alerta y desglose
+  por clase.
+
+**Licencia**: UCF-Crime es de uso investigador, no libre. Se evalúa con él pero
+**no entra en el testbench versionado**; los clips viven en S3 y el arranque de la
+cámara los recoge de ahí. Los clips de `CLIPS.md` siguen siendo solo Wikimedia.
+
+### Hallazgo 1 — `MIN_MOTION_AREA` depende de la resolución (fallo en producción)
+
+`MIN_MOTION_AREA` son **500 píxeles absolutos**, calibrados para 1080p. Traducido
+a fracción del encuadre:
+
+| resolución | 500 px equivalen a |
+|---|---|
+| 1920x1080 (producción) | 0,0965% |
+| 960x540 (el mock) | 0,39% — **4x más duro** |
+| 320x240 (UCF-Crime) | 2,60% — **27x más duro** |
+
+A 320x240 MOG2 disparaba en el **0,4%** de los fotogramas y la cascada quedaba
+muda: habría dado un AUC de azar por configuración, no por método.
+
+Dos consecuencias que van más allá del benchmark:
+
+1. **Cualquier cámara de cliente por debajo de 1080p tiene la puerta de
+   movimiento silenciosamente endurecida.** No falla, no avisa: simplemente
+   deja de alertar. Merece arreglo en producción (expresar el umbral como
+   fracción del área, no en píxeles).
+2. **El propio banco de pruebas corre 4x más duro que producción**, porque el
+   mock sirve a 960x540. Las comparaciones entre ciclos siguen siendo válidas
+   (misma escala en todos), pero los números absolutos son pesimistas.
+
+### Hallazgo 2 — casi cuelo un no-op silencioso
+
+`pad_square_roi` recibe `min_size` como argumento **por defecto**, y los defaults
+se enlazan al definir la función: reasignar la global no le llega. El reescalado
+del ROI no habría hecho nada y el número se habría reportado como bueno. Se
+detectó porque los tiempos no cuadraban (670 fps con CLIP supuestamente activo es
+imposible). **Tercera vez que aparece este patrón**: verificar que el código nuevo
+se EJECUTA, no solo que no peta.
+
+### Hallazgo 3 — `mock_camera.py` daba por lista una cámara que no lo estaba
+
+La espera busca `"camara lista"` en `testcam/status.log`, **y ese log sobrevive a
+la instancia que lo escribió**. Dio por buena una instancia de 47 segundos leyendo
+el log del día anterior. Arreglado en origen: borra el log antes de arrancar.
+Ya había mordido una vez y entonces se esquivó en el flujo en vez de arreglarse
+en la herramienta.
+
+### Hallazgo 4 — `register` deja la cámara vigilando solo `persona`
+
+`cmd_register` fija `detection_blacklist: ["persona"]`. La caja de análisis puntúa
+todos los conceptos pero luego **filtra por los de la cámara**, así que con esa
+configuración ningún robo ni pelea puede alertar jamás. Cualquier medición de
+robos/violencia hecha sin reconfigurar antes no es interpretable.
+
+### Resultado parcial (41/290 vídeos, todos anómalos — provisional)
+
+```
+capa 0 sola (movimiento MOG2)      AUC = 64,24%
+capa 1 sola (margen CLIP)          AUC = 61,60%
+cascada capa 0 + capa 1            AUC = 61,65%
+```
+
+**CLIP puntúa PEOR que el movimiento a secas, y combinarlos no mejora ninguno.**
+Con los 150 vídeos normales aún fuera, el número se moverá; pero si aguanta, la
+pregunta del paso 3 deja de ser "sustituir CLIP por YOLO-World" y pasa a ser
+**qué está aportando CLIP además de coste de CPU**.
+
+Coincide con lo ya medido por otra vía: margen 0,089 para "persona" en una montaña
+vacía contra 0,063 de mediana en aciertos reales. Ahora sobre 200.000 fotogramas
+en vez de una anécdota.
+
+Desglose por clase (provisional): **Assault 86,14%**, Arrest 44,53% (bajo el azar).
+La cascada no es uniformemente mala: es buena en agresión física y ciega en otras.
+
+### Pendiente
+
+- Cerrar el benchmark con los 290 y publicar AUC, FAR/hora y latencia definitivos.
+- Medir el rendimiento de CLIP en `m7i-flex.large` (el AUC no depende del
+  hardware, el coste sí).
+- Arreglar `MIN_MOTION_AREA` en producción como fracción del área.

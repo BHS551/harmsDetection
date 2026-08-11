@@ -175,3 +175,6 @@ cython_debug/
 
 # Local (heredado de master)
 .env.example
+
+# Estado local de la cámara mock (id de instancia e IP de la corrida actual)
+testbench/.mock_camera_state.json

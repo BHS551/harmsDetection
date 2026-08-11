@@ -82,6 +82,25 @@ for e in "${ESCENAS[@]}"; do
   push_log
 done
 
+# --- Escenas extra ya normalizadas, servidas desde S3 ---
+# Permite añadir material de evaluación sin recompilar la lista de arriba ni
+# depender de una descarga externa en el arranque. Se usa para clips que NO
+# pueden vivir en el repositorio por licencia (p. ej. el test de UCF-Crime, que
+# es de uso investigador y no libre como los de Wikimedia): el fichero se queda
+# en el bucket y nunca entra en el testbench versionado.
+say "recogiendo escenas extra de s3://${S3_BUCKET}/${S3_PREFIX}/extra/ ..."
+aws s3 sync "s3://${S3_BUCKET}/${S3_PREFIX}/extra/" "$WORKDIR" --exclude "*" --include "scene_*.mp4" 2>&1 \
+  || python3 - <<'PYX' || say "WARN: sin escenas extra"
+import boto3, os
+s3 = boto3.client("s3", region_name="us-east-1")
+r = s3.list_objects_v2(Bucket="detection-frames-tests", Prefix="testcam/extra/")
+for o in r.get("Contents", []):
+    n = os.path.basename(o["Key"])
+    if n.startswith("scene_") and n.endswith(".mp4"):
+        s3.download_file("detection-frames-tests", o["Key"], f"/opt/stream/{n}")
+        print("extra:", n)
+PYX
+
 ls -1 scene_*.mp4 > escenas.txt || true
 say "escenas disponibles: $(tr '\n' ' ' < escenas.txt)"
 DEFECTO="$(head -1 escenas.txt)"
