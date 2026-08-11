@@ -4,9 +4,9 @@
   "por_etiqueta": {}
  },
  "calle_peatones": {
-  "total": 6,
+  "total": 5,
   "por_etiqueta": {
-   "persona": 6
+   "persona": 5
   }
  },
  "obra_normal": {
@@ -40,9 +40,9 @@
   }
  },
  "disturbios_calle": {
-  "total": 4,
+  "total": 5,
   "por_etiqueta": {
-   "persona": 4
+   "persona": 5
   }
  },
  "pelea_calle": {

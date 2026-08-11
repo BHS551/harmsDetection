@@ -49,7 +49,12 @@ def _corte_claro(label, por_defecto):
 # regulador de caudal, así que ahí no se podría reconstruir la secuencia.
 _historial = {}
 HISTORIAL_MAX = 12
-SEPARACION_TIRA = float(os.environ.get("HEIMDALL_SEPARACION_TIRA", "1.0"))  # segundos
+# Ventana de la que se cogen los fotogramas de la tira: cubre una ráfaga entera
+# (10 fotogramas en ~3 s) sin llegar a la anterior, que está 15 s atrás.
+VENTANA_TIRA = float(os.environ.get("HEIMDALL_VENTANA_TIRA", "5.0"))
+# Rango mínimo entre el primero y el último: por debajo de esto serían casi el
+# mismo fotograma y la tira no aportaría contexto temporal alguno.
+SEPARACION_MINIMA = float(os.environ.get("HEIMDALL_SEPARACION_MINIMA", "0.5"))
 TIRA_MAX_BYTES = 180_000   # margen frente al límite de 256 KB de un mensaje SQS
 
 
@@ -67,16 +72,33 @@ def _tira_temporal(msg):
     """
     h = _historial.get(msg.get("camera_name", "?"))
     if not h or len(h) < 2:
+        print(f"[tira] sin historial suficiente ({0 if not h else len(h)} fotogramas)")
         return None
+    # Selección ADAPTATIVA. Exigir "exactamente 1 s y 2 s antes" solo funcionaba 1
+    # de cada 4 veces: la capa 0 emite ráfagas de 10 fotogramas en 3 s y luego calla
+    # 15 s, así que un candidato al principio de una ráfaga solo tiene detrás
+    # fotogramas de 15 s atrás, que no valen. Dentro de una ráfaga, en cambio, hay
+    # fotogramas cada ~0,33 s: material de sobra. Lo que sobraba era la rigidez.
+    # Ahora se cogen los del MISMO evento (dentro de VENTANA_TIRA) y se reparten
+    # por el rango disponible, sea cual sea.
     ahora = h[-1][0]
+    recientes = [(t, b) for t, b in h if ahora - t <= VENTANA_TIRA]
+    if len(recientes) < 2:
+        print(f"[tira] un solo fotograma en la ventana de {VENTANA_TIRA:.0f}s")
+        return None
+    span = ahora - recientes[0][0]
+    if span < SEPARACION_MINIMA:
+        print(f"[tira] fotogramas demasiado juntos (rango {span:.2f}s)")
+        return None
     elegidos = [h[-1][1]]
-    for objetivo in (SEPARACION_TIRA, 2 * SEPARACION_TIRA):
-        cand = min(h, key=lambda p: abs((ahora - p[0]) - objetivo))
-        # Solo vale si de verdad está separado: si el búfer es corto, todos los
-        # fotogramas serían casi el mismo y la tira no aportaría nada.
-        if abs((ahora - cand[0]) - objetivo) < objetivo * 0.6:
+    # Hasta dos fotogramas más, repartidos por el rango realmente disponible.
+    for frac in (0.5, 1.0):
+        objetivo = ahora - span * frac
+        cand = min(recientes, key=lambda p: abs(p[0] - objetivo))
+        if cand[1] not in elegidos:
             elegidos.append(cand[1])
     if len(elegidos) < 2:
+        print(f"[tira] no se pudieron elegir fotogramas distintos ({len(recientes)} disponibles)")
         return None
     try:
         imgs = [cv2.imdecode(np.frombuffer(b, np.uint8), cv2.IMREAD_COLOR) for b in elegidos]
@@ -89,8 +111,16 @@ def _tira_temporal(msg):
         # una secuencia y no como fotogramas sueltos.
         tira = np.hstack(list(reversed(imgs)))
         ok, buf = cv2.imencode(".jpg", tira, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-        if not ok or buf.nbytes > TIRA_MAX_BYTES:
+        if not ok:
+            print("[tira] fallo al codificar")
             return None
+        if buf.nbytes > TIRA_MAX_BYTES:
+            print(f"[tira] descartada por tamaño ({buf.nbytes//1024} KB)")
+            return None
+        # Rastro de que SÍ se compuso. Sin esto, "la idea no sirve" y "la idea no
+        # llegó a ejecutarse" son indistinguibles en los resultados — que es
+        # exactamente lo que pasó en la primera medición del paso 1.
+        print(f"[tira] compuesta con {len(imgs)} fotogramas ({buf.nbytes//1024} KB)")
         return buf.tobytes()
     except Exception as e:
         print(f"[tira] no se pudo componer: {type(e).__name__}")

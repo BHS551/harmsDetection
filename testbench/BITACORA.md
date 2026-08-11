@@ -596,3 +596,53 @@ solo parte de las veces, y no sé en qué proporción.**
 funciona, solo cuando falla. Así que si el recall no sube no podré distinguir "la
 idea no sirve" de "la idea no llegó a probarse". En el paso 2, el registro de
 ejecución va ANTES que la lógica.
+
+### Paso 1 — resultado y corrección
+
+**Primera medición**: 6/6 negativos, 1/4 positivos. **Idéntico al ciclo 6**: la
+aguja no se movió.
+
+Pero la cifra no valía para decidir. Al instrumentar las tres salidas de la
+función y lanzar una prueba dirigida sobre `disturbios_calle`:
+
+| salida | veces |
+|---|---|
+| compuesta con 3 fotogramas (116 KB) | 1 |
+| fotogramas no espaciados | 2 |
+| sin historial suficiente | 1 |
+
+**La tira solo se componía 1 de cada 4 veces.** El paso 1 estaba INFRA-PROBADO,
+no refutado. De haber concluido con la matriz en la mano, habría descartado una
+idea correcta por un fallo de implementación, y habría quedado escrito aquí como
+"el grid temporal no funciona", envenenando decisiones futuras.
+
+**Causa**: exigir fotogramas a exactamente 1 s y 2 s no encaja con cómo emite la
+capa 0 —ráfagas de 10 fotogramas en 3 s y luego 15 s de silencio—. Un candidato
+al principio de una ráfaga solo tiene detrás fotogramas de 15 s atrás. Dentro de
+una ráfaga, en cambio, hay uno cada ~0,33 s: material de sobra. Lo que sobraba
+era la rigidez.
+
+**Corrección desplegada**: selección adaptativa. Se cogen los fotogramas del mismo
+evento (ventana de 5 s) y se reparten por el rango realmente disponible, exigiendo
+solo un rango mínimo de 0,5 s. Verificado con cadencias reales: compone con media
+ráfaga o más; sigue rechazando fotogramas casi simultáneos o aislados.
+
+**Señal prometedora, aún sin confirmar**: con la única tira que sí se compuso, las
+respuestas del VLM cambiaron de tono —de *"no hay ninguna pelea"* a *"personas en
+actitudes agresivas"*, *"enfrentándose verbalmente"*, *"ambiente de desorden"*—.
+Percibe la tensión, que antes ni mencionaba. Es **una sola muestra**: no concluye
+nada, pero justifica volver a medir.
+
+**Estado al cerrar la sesión**: la verificación de la tira adaptativa quedó SIN
+completar. El worker tardó >14 min en arrancar (instalación de `ultralytics`) y se
+apagó todo antes de obtener el dato.
+
+### Lo primero al retomar
+
+1. **Repetir la prueba dirigida** sobre `disturbios_calle` con la tira adaptativa
+   ya desplegada: medir qué porcentaje se compone y si el VLM confirma. Es el dato
+   que decide si el paso 1 vale o se descarta.
+2. **Hornear `ultralytics` en el AMI**. Ya rompió un worker (ciclo 4) y ahora
+   retrasó una verificación 14 minutos. Cada arranque de cámara lo paga.
+3. Solo entonces, el **paso 2** (seguimiento + regla temporal de caídas), con el
+   registro de ejecución escrito ANTES que la lógica.

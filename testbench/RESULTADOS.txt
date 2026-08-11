@@ -3,7 +3,7 @@
   alertas: 0  {}
 
 === escena: calle_peatones ===
-  alertas: 6  {'persona': 6}
+  alertas: 5  {'persona': 5}
 
 === escena: obra_normal ===
   alertas: 5  {'persona': 5}
@@ -21,7 +21,7 @@
   alertas: 7  {'persona': 7}
 
 === escena: disturbios_calle ===
-  alertas: 4  {'persona': 4}
+  alertas: 5  {'persona': 5}
 
 === escena: pelea_calle ===
   alertas: 6  {'persona': 4, 'caidas': 2}
@@ -32,13 +32,13 @@
 
 ########## MATRIZ ##########
   naturaleza_vacia     alertas=   0  {}                                             correcto (sin alerta de incidente)
-  calle_peatones       alertas=   6  {'persona': 6}                                 correcto (sin alerta de incidente)
+  calle_peatones       alertas=   5  {'persona': 5}                                 correcto (sin alerta de incidente)
   obra_normal          alertas=   5  {'persona': 5}                                 correcto (sin alerta de incidente)
   accidente_laboral    alertas=   5  {'persona': 5}                                 correcto (sin alerta de incidente)
   caida_judo           alertas=   2  {'persona': 2}                                 correcto (sin alerta de incidente)
   caida_escaleras      alertas=   6  {'persona': 6}                                 NO DETECTADO (esperado ['caidas'])
   disturbios_saqueo    alertas=   7  {'persona': 7}                                 NO DETECTADO (esperado ['robos', 'violencia'])
-  disturbios_calle     alertas=   4  {'persona': 4}                                 NO DETECTADO (esperado ['robos', 'violencia'])
+  disturbios_calle     alertas=   5  {'persona': 5}                                 NO DETECTADO (esperado ['robos', 'violencia'])
   pelea_calle          alertas=   6  {'persona': 4, 'caidas': 2}                    DETECTADO ['caidas']
   interseccion         alertas=   0  {}                                             correcto (sin alerta de incidente)
 
