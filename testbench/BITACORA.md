@@ -929,3 +929,140 @@ Reutilizar los de CLIP habría disparado con todo.
 - Medir el rendimiento de CLIP en `m7i-flex.large` (el AUC no depende del
   hardware, el coste sí).
 - Arreglar `MIN_MOTION_AREA` en producción como fracción del área, no en píxeles.
+
+---
+
+## Ciclo 9 — YOLOE en la capa 1: mejor midiendo, regresión en producción
+
+### 1. Estado de partida
+
+Ciclo 8 dejó medido que CLIP resta: 55,49% de AUC frente al 58,35% del
+movimiento a secas. La pregunta pasó de "¿con qué sustituimos a CLIP?" a "¿por
+qué sigue CLIP en el camino de decisión?".
+
+### 2. Investigación
+
+- **CLIP es bolsa de palabras**, documentado: ARO da 63% en atributos y 59% en
+  relaciones; en Winoground los VLM contrastivos rinden cerca del azar en
+  composicionalidad.
+- **YOLOE** supera a YOLO-World en +10/+11 AP sobre LVIS y va 1,4x más rápido.
+  Usa MobileCLIP por dentro, así que hereda la semántica abierta, pero está
+  OBLIGADO a localizar: no puede afirmar "persona" sin dibujar una caja.
+- **AnyAnomaly** (WACV 2026, con código) valida pasarle contexto estructurado al
+  VLM en vez del fotograma pelado: +9,88% y +13,65% sobre su línea base.
+
+### 3. ¿Sirve CLIP como verificador de atributos? MEDIDO: casi no
+
+Se probó la idea de preguntarle cosas concretas en vez de "¿esto es un robo?".
+119 vídeos, 400.622 fotogramas:
+
+| sonda | AUC | correlación con "personas" |
+|---|---|---|
+| objetos_suelo | 62,48% | r=0,75 REDUNDANTE |
+| personas | 61,35% | — |
+| movimiento (gratis) | 60,93% | referencia |
+| golpe | 60,55% | r=0,69 REDUNDANTE |
+| caida | 55,81% | r=-0,06 independiente |
+| encapuchado | 51,47% | r=0,24 pero al azar |
+
+Combinación con partición POR VÍDEO y 12 semillas: **+1,08 ± 1,16** sobre el
+movimiento. La ventaja es menor que su desviación.
+
+**Por qué falla**: las dos sondas que mejor puntúan son redundantes con
+"¿hay personas?". Todos los prompts de `golpe` contienen la palabra *person*:
+CLIP responde a los SUSTANTIVOS, no al verbo. El efecto bolsa de palabras
+reproducido sobre material propio.
+
+**Lección de diseño**: si se usan sondas, que pregunten por objetos y atributos
+de objeto, nunca por acciones ni relaciones.
+
+### 4. YOLOE: medido antes de desplegar
+
+Coste en `m7i-flex.large` con fotogramas reales de producción (1920x1080):
+
+| motor | ms/frame | fps |
+|---|---|---|
+| yoloe-11s (vocabulario dirigido) | 242,5 | 4,12 |
+| CLIP ViT-B/32 (3 ROIs) | 304,5 | 3,28 |
+
+**YOLOE es un 20% más rápido que el CLIP al que sustituye.**
+
+Calidad, 119 vídeos / 400.622 fotogramas:
+
+```
+CLIP (produccion)        58,71%
+YOLOE (nuevo)            62,62%   +3,91 sobre CLIP, +1,69 sobre movimiento
+movimiento MOG2          60,93%
+```
+
+Primer motor que ocupa ese puesto y supera al movimiento. Gana en Robbery
+(+8,49), Stealing (+7,15), Burglary (+3,43), Shoplifting (+2,91); Assault 92,65%.
+Pierde en Fighting (-5,60).
+
+**Vocabulario dirigido, nunca abierto**: el modo sin prompt (4.585 clases)
+devuelve ruido de escena sobre CCTV ("bamboo forest", "pilgrim", "chicken coop")
+y va al doble de lento.
+
+### 5. LA REGRESIÓN — y por qué fue culpa del método, no del modelo
+
+Desplegado YOLOE por defecto. Un worker de cliente lanzado 18 min después se
+llevó el código nuevo. Con `cuchillo` activo y un cuchillo real sostenido en la
+mano a distancia de terraza: `label=None score=0.000` en bucle. **Cámara muda.**
+
+No fue fallo de carga — el modelo arrancó con el vocabulario de cuchillos
+correcto. YOLOE simplemente no ve un objeto fino y pequeño a esa distancia, que
+es el caso peor de un detector. CLIP no necesitaba localizar: le bastaba con que
+el recorte se pareciera a un cuchillo.
+
+**El error real**: la validación se hizo sobre UCF-Crime, que NO tiene una sola
+anotación de cuchillos ni armas, y aun así se cambió el motor para TODOS los
+conceptos. Se midieron tres eventos abstractos y se extrapoló a un cuarto
+concepto sin ninguna medición que lo respaldara.
+
+**Revertido** a CLIP por defecto. `HEIMDALL_MOTOR=yoloe` lo reactiva.
+
+**Regla que sale de aquí**: no cambiar el motor de un concepto sin material
+anotado que contenga ESE concepto. Un AUC global no autoriza un cambio por clase.
+
+### 6. Prueba end-to-end con YOLOE: 1/6, igual que CLIP
+
+Los cinco positivos dieron solo `persona`. Causa identificada: las reglas de
+evento abstracto quedaron demasiado conservadoras — `robos` exige detectar un
+arma (umbral 0,30 contra un suelo de 0,15) y `violencia` exige DOS personas
+próximas, y a baja resolución YOLOE detecta una.
+
+El AUC mide ordenamiento, no si algo cruza el umbral. YOLOE ordena mejor y aun
+así no alerta.
+
+### 7. COSTE: el diagnóstico estaba desactualizado
+
+Medido en CloudWatch, no estimado:
+
+| componente | $/cámara/mes | |
+|---|---|---|
+| EC2 `m7i-flex.large` 24/7 | **55,19** | **95%** |
+| EBS 12-20 GB gp3 | ~1,20 | |
+| Bedrock (Mimir) | **1,10-1,70** | 1.424 invocaciones/día en TODA la cuenta |
+| S3 (0,18 GB, 502 objetos) | ~0,01 | |
+| DynamoDB + SQS + Lambda | <1 | |
+| **Total** | **~58** | |
+
+**Bedrock es el 3% del coste, no el 97%.** Llevamos ciclos optimizando el gasto
+del VLM; el objetivo correcto ahora es otro.
+
+**Hallazgo mayor**: la topología de Fase B (caja de movimiento + caja de análisis
+compartidas) NO está activa. El log dice `mode=local`: cada cámara levanta su
+propia `m7i-flex.large`. Por eso se pagan $55/cámara en vez de los $19-25 del
+precio por paquete. Activarla es pasar de ~$58 a ~$20 por cámara **sin tocar una
+línea de la detección**. Es el mayor ahorro disponible.
+
+### 8. Pendientes
+
+- Activar la topología compartida (mayor ahorro, sin riesgo de detección).
+- Barrer umbrales de las reglas de YOLOE con los datos ya capturados, en vez de
+  fijarlos a ojo.
+- Motor POR CONCEPTO: YOLOE en eventos abstractos, CLIP en objetos pequeños.
+  La regresión demuestra que un motor único para todo es la decisión equivocada.
+- `MIN_MOTION_AREA` como fracción del área, no en píxeles absolutos.
+- Instrumentar el worker: su log entero era una línea.
+- SNS `MonthlySpendLimit` sigue bloqueado por denegación de IAM.

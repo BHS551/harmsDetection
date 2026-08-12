@@ -40,11 +40,24 @@ def load_context(path):
         return json.load(f)
 
 
-# Motor de la capa 1. CLIP mide 55,49% de AUC sobre el test de UCF-Crime, por
-# DEBAJO del 58,35% del movimiento a secas; YOLOE ocupa su puesto y además es un
-# 20% más rápido (242 ms/frame contra 305). Se deja conmutable por entorno para
-# poder volver atrás sin desplegar: HEIMDALL_MOTOR=clip restaura el anterior.
-MOTOR = os.environ.get("HEIMDALL_MOTOR", "yoloe").strip().lower()
+# Motor de la capa 1. Por defecto CLIP.
+#
+# YOLOE mide mejor que CLIP en los eventos abstractos (62,62% contra 58,71% de
+# AUC sobre 119 vídeos de UCF-Crime) y es un 20% más rápido, pero se REVIRTIÓ
+# como motor por defecto tras una regresión en producción: con `cuchillo`
+# activo, YOLOE no detectó un cuchillo sostenido en la mano a distancia de
+# terraza y la cámara se quedó muda (`label=None score=0.000` en bucle).
+#
+# La causa del fallo NO fue el modelo sino el método: la validación se hizo sobre
+# UCF-Crime, que NO tiene anotaciones de cuchillos ni de armas, y aun así se
+# cambió el motor para TODOS los conceptos. Un objeto pequeño y fino a distancia
+# es justo el caso peor de un detector, y justo el caso donde CLIP no necesita
+# localizar: le basta con que el recorte se parezca a un cuchillo.
+#
+# HEIMDALL_MOTOR=yoloe lo reactiva para experimentar. No volver a ponerlo por
+# defecto sin medir ANTES los conceptos de objeto (cuchillo, pistola) con
+# material anotado que los contenga.
+MOTOR = os.environ.get("HEIMDALL_MOTOR", "clip").strip().lower()
 
 
 def _clase_scorer():
