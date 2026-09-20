@@ -1,3 +1,4 @@
+import os
 import cv2
 import time
 from PIL import Image
@@ -26,7 +27,7 @@ def send_sms_alert(message_body):
     print("SMS sent:", message.sid)
 
 # === Camera and Detection Configuration ===
-rtsp_url = "rtsp://bhsentrance:mainSecurePass1@8.tcp.ngrok.io:15666/stream1"
+rtsp_url = os.environ.get("RTSP_URL", "")
 
 # Set device and load the CLIP model
 device = "cuda" if torch.cuda.is_available() else "cpu"

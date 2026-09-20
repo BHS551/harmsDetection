@@ -1,3 +1,4 @@
+import os
 import cv2
 import time
 from PIL import Image
@@ -7,8 +8,8 @@ from twilio.rest import Client
 import numpy as np
 
 # === Twilio configuration ===
-account_sid = null  # Replace with your Account SID
-auth_token = "c7ea6fdcd8bd75d3b9ab6ec2df33e1f5"       # Replace with your Auth Token
+account_sid = os.environ.get("TWILIO_ACCOUNT_SID", "")  # Replace with your Account SID
+auth_token = os.environ.get("TWILIO_AUTH_TOKEN", "")       # Replace with your Auth Token
 twilio_phone = "+14793178516"                         # Your Twilio phone number
 recipient_phone = "+573043566310"                     # The number to alert
 
@@ -23,7 +24,7 @@ def send_sms_alert(message_body):
     print("SMS sent:", message.sid)
 
 # === Camera and Detection Configuration ===
-rtsp_url = "rtsp://admin551:123456789@192.168.20.102:554/stream1"  # Update with your camera's credentials
+rtsp_url = os.environ.get("RTSP_URL", "")  # Update with your camera's credentials
 
 # Set device and load the CLIP model with its preprocessing function.
 device = "cuda" if torch.cuda.is_available() else "cpu"

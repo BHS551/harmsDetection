@@ -1,3 +1,4 @@
+import os
 import time
 import cv2
 from PIL import Image
@@ -9,8 +10,8 @@ from twilio.rest import Client
 #          TWILIO CONFIG
 # ================================
 # Replace the credentials below with your own
-account_sid = null
-auth_token = "c7ea6fdcd8bd75d3b9ab6ec2df33e1f5"
+account_sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
+auth_token = os.environ.get("TWILIO_AUTH_TOKEN", "")
 twilio_phone = "+14793178516"
 recipient_phone = "+573043566310"
 
@@ -29,7 +30,7 @@ def send_sms_alert(message_body: str) -> None:
 #     CAMERA & DETECTION CONFIG
 # ================================
 # Replace with your RTSP URL (username, password, host, port)
-rtsp_url = "rtsp://admin551:123456789@0.tcp.ngrok.io:12644/stream1"
+rtsp_url = os.environ.get("RTSP_URL", "")
 
 # Choose device for Torch
 device = "cuda" if torch.cuda.is_available() else "cpu"

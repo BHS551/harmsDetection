@@ -1,7 +1,8 @@
+import os
 import cv2
 
 # Replace this with your URL (or use an env var)
-RTSP_URL = "rtsp://test123:123456789@4.tcp.ngrok.io:19953/stream1"
+RTSP_URL = os.environ.get("RTSP_URL", "")
 
 print("Opening:", RTSP_URL)
 cap = cv2.VideoCapture(RTSP_URL)
