@@ -1,0 +1,107 @@
+[
+  {
+    "video": "Fighting003_x264A.mp4",
+    "label": "violencia",
+    "fps": 30.0,
+    "anomaly": [1820, 3103],
+    "nota": "dificil: video granulado, la rafaga confirma 2/7 dentro del evento"
+  },
+  {
+    "video": "Shooting002_x264A.mp4",
+    "label": "violencia",
+    "fps": 30.0,
+    "anomaly": [1020, 1100],
+    "nota": "caso limite: disparo a distancia, 'violencia' no es la etiqueta correcta"
+  },
+  {
+    "video": "Assault011_x264.mp4",
+    "label": "violencia",
+    "fps": 30.0,
+    "anomaly": [375, 960],
+    "nota": "sin senal: buena imagen pero CLIP no distingue el evento (AUC 0.4622)"
+  },
+  {
+    "video": "Fighting042_x264A.mp4",
+    "label": "violencia",
+    "fps": 30.0,
+    "anomaly": [290, 1200],
+    "nota": "caso exitoso: AUC 0.6673, confirma sin falsos positivos"
+  },
+  {
+    "video": "Fighting042_x264A.mp4",
+    "label": "persona",
+    "fps": 30.0,
+    "anomaly": null,
+    "nota": "persona presente casi todo el video; 11/11 llamadas confirmaron"
+  },
+  {
+    "video": "Robbery048_x264.mp4",
+    "label": "robos",
+    "fps": 30.0,
+    "anomaly": [450, 930],
+    "nota": "arma pequena/oculta, nunca confirma"
+  },
+  {
+    "video": "Robbery102_x264.mp4",
+    "label": "robos",
+    "fps": 30.0,
+    "anomaly": [1080, 1560],
+    "nota": "forcejeo claro pero sin despojo visible, nunca confirma"
+  },
+  {
+    "video": "Burglary024_x264A.mp4",
+    "label": "robos",
+    "fps": 30.0,
+    "anomaly": [60, 1230],
+    "nota": "hurto silencioso sin fuerza visible, nunca confirma - limite real, no de la pregunta"
+  },
+  {
+    "video": "caida_escaleras.mp4",
+    "label": "caidas",
+    "fps": 25.0,
+    "anomaly": [950, 1499],
+    "nota": "caso exitoso: AUC 0.6693, latencia 7.92s"
+  },
+  {
+    "video": "caida_judo_src.webm",
+    "label": "caidas",
+    "fps": 23.976,
+    "anomaly": null,
+    "nota": "negativo dificil (lanzamiento controlado); debe rechazar - 0/2 confirmo, correcto"
+  },
+  {
+    "video": "cuchillo_afilado.mp4",
+    "label": "cuchillo",
+    "fps": 30.0,
+    "anomaly": null,
+    "nota": "falla conocida: la mano tapa el cuchillo, no confirma pese a resolucion mas alta"
+  },
+  {
+    "video": "cuchillo_piedra.mp4",
+    "label": "cuchillo",
+    "fps": 30.0,
+    "anomaly": null,
+    "nota": "caso exitoso: cuchillo sin obstruir, 2/3 confirmo"
+  },
+  {
+    "video": "Normal_Videos_015_x264.mp4",
+    "label": "violencia",
+    "fps": 30.0,
+    "anomaly": null,
+    "nota": "negativo genuino, 0 falsos positivos"
+  },
+  {
+    "video": "Normal_Videos_015_x264.mp4",
+    "label": "robos",
+    "fps": 30.0,
+    "anomaly": null,
+    "nota": "negativo genuino, 0 falsos positivos"
+  },
+  {
+    "video": "Normal_Videos_015_x264.mp4",
+    "label": "persona",
+    "fps": 30.0,
+    "anomaly": null,
+    "nota": "tiene gente caminando (Normal = sin crimen, no sin gente); 2/2 confirmo"
+  }
+]

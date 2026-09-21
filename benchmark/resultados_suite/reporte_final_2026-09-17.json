@@ -1,0 +1,152 @@
+[
+  {
+    "video": "Fighting003_x264A.mp4",
+    "concepto": "violencia",
+    "auc": 0.5342,
+    "latencia_s": 27.97,
+    "detecto_alguna_vez": true,
+    "llamadas_vlm": 17,
+    "tiempo_corrida_s": 674.6,
+    "nota": "dificil: video granulado, la rafaga confirma 2/7 dentro del evento"
+  },
+  {
+    "video": "Shooting002_x264A.mp4",
+    "concepto": "violencia",
+    "auc": 0.7618,
+    "latencia_s": 2.0,
+    "detecto_alguna_vez": true,
+    "llamadas_vlm": 7,
+    "tiempo_corrida_s": 327.0,
+    "nota": "caso limite: disparo a distancia, 'violencia' no es la etiqueta correcta"
+  },
+  {
+    "video": "Assault011_x264.mp4",
+    "concepto": "violencia",
+    "auc": 0.4622,
+    "latencia_s": null,
+    "detecto_alguna_vez": false,
+    "llamadas_vlm": 13,
+    "tiempo_corrida_s": 398.2,
+    "nota": "sin senal: buena imagen pero CLIP no distingue el evento (AUC 0.4622)"
+  },
+  {
+    "video": "Fighting042_x264A.mp4",
+    "concepto": "violencia",
+    "auc": 0.6673,
+    "latencia_s": 15.3,
+    "detecto_alguna_vez": true,
+    "llamadas_vlm": 11,
+    "tiempo_corrida_s": 387.9,
+    "nota": "caso exitoso: AUC 0.6673, confirma sin falsos positivos"
+  },
+  {
+    "video": "Normal_Videos_015_x264.mp4",
+    "concepto": "violencia",
+    "auc": null,
+    "latencia_s": null,
+    "detecto_alguna_vez": false,
+    "llamadas_vlm": 2,
+    "tiempo_corrida_s": 44.9,
+    "nota": "negativo genuino, 0 falsos positivos"
+  },
+  {
+    "video": "Fighting042_x264A.mp4",
+    "concepto": "persona",
+    "auc": null,
+    "latencia_s": null,
+    "detecto_alguna_vez": true,
+    "llamadas_vlm": 11,
+    "tiempo_corrida_s": 319.9,
+    "nota": "persona presente casi todo el video; 11/11 llamadas confirmaron"
+  },
+  {
+    "video": "Normal_Videos_015_x264.mp4",
+    "concepto": "persona",
+    "auc": null,
+    "latencia_s": null,
+    "detecto_alguna_vez": true,
+    "llamadas_vlm": 2,
+    "tiempo_corrida_s": 40.8,
+    "nota": "tiene gente caminando (Normal = sin crimen, no sin gente); 2/2 confirmo"
+  },
+  {
+    "video": "Robbery048_x264.mp4",
+    "concepto": "robos",
+    "auc": 0.7558,
+    "latencia_s": null,
+    "detecto_alguna_vez": false,
+    "llamadas_vlm": 7,
+    "tiempo_corrida_s": 143.6,
+    "nota": "arma pequena/oculta, nunca confirma"
+  },
+  {
+    "video": "Robbery102_x264.mp4",
+    "concepto": "robos",
+    "auc": 0.6123,
+    "latencia_s": null,
+    "detecto_alguna_vez": false,
+    "llamadas_vlm": 8,
+    "tiempo_corrida_s": 114.7,
+    "nota": "forcejeo claro pero sin despojo visible, nunca confirma"
+  },
+  {
+    "video": "Burglary024_x264A.mp4",
+    "concepto": "robos",
+    "auc": 0.7677,
+    "latencia_s": null,
+    "detecto_alguna_vez": false,
+    "llamadas_vlm": 6,
+    "tiempo_corrida_s": 69.1,
+    "nota": "hurto silencioso sin fuerza visible, nunca confirma - limite real, no de la pregunta"
+  },
+  {
+    "video": "Normal_Videos_015_x264.mp4",
+    "concepto": "robos",
+    "auc": null,
+    "latencia_s": null,
+    "detecto_alguna_vez": false,
+    "llamadas_vlm": 2,
+    "tiempo_corrida_s": 37.9,
+    "nota": "negativo genuino, 0 falsos positivos"
+  },
+  {
+    "video": "caida_escaleras.mp4",
+    "concepto": "caidas",
+    "auc": 0.6693,
+    "latencia_s": 7.92,
+    "detecto_alguna_vez": true,
+    "llamadas_vlm": 10,
+    "tiempo_corrida_s": 1140.0,
+    "nota": "caso exitoso: AUC 0.6693, latencia 7.92s"
+  },
+  {
+    "video": "caida_judo_src.webm",
+    "concepto": "caidas",
+    "auc": null,
+    "latencia_s": null,
+    "detecto_alguna_vez": false,
+    "llamadas_vlm": 2,
+    "tiempo_corrida_s": 100.1,
+    "nota": "negativo dificil (lanzamiento controlado); debe rechazar - 0/2 confirmo, correcto"
+  },
+  {
+    "video": "cuchillo_afilado.mp4",
+    "concepto": "cuchillo",
+    "auc": null,
+    "latencia_s": null,
+    "detecto_alguna_vez": false,
+    "llamadas_vlm": 2,
+    "tiempo_corrida_s": 29.1,
+    "nota": "falla conocida: la mano tapa el cuchillo, no confirma pese a resolucion mas alta"
+  },
+  {
+    "video": "cuchillo_piedra.mp4",
+    "concepto": "cuchillo",
+    "auc": null,
+    "latencia_s": null,
+    "detecto_alguna_vez": true,
+    "llamadas_vlm": 3,
+    "tiempo_corrida_s": 432.7,
+    "nota": "caso exitoso: cuchillo sin obstruir, 2/3 confirmo"
+  }
+]
