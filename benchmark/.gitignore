@@ -1,0 +1,9 @@
+# Videos y salidas pesadas: viven fuera del repo (luego S3)
+*.mp4
+*.webm
+*.ogv
+*.pt
+__pycache__/
+thumbs/
+resultados_suite/*.csv
+scores_*.csv
