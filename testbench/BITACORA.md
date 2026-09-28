@@ -341,3 +341,46 @@ puerta sirve poco" sino "sirve poco cuando siempre hay gente".
    incidente plausible en una escena de incidente, en vez de exigir la exacta.
 4. **Medir la curva coste/latencia** de `VLM_MIN_INTERVAL` (6 s hoy) para que la
    elección del punto sea del usuario y no del implementador.
+
+---
+
+## Revisión de preparación para escalar clientes (2026-09-28)
+
+Revisión de solo lectura (código + AWS en vivo). No se cambió código ni infraestructura.
+
+### Estado actual (medido hoy)
+
+- **Salud**: sin instancias en marcha (solo `skyeye-testcam` y una micro, ambas paradas); colas SQS y DLQ vacías; 10 Lambdas sin invocaciones ni errores en 7 días. Sistema sano pero **sin uso**: 3 suscripciones (1 dueño, 1 banco de pruebas, 1 usuario externo), última actividad de worker real el 2026-08-11.
+- **Sin observabilidad**: 0 alarmas CloudWatch. Si un worker o Lambda falla, nadie se entera.
+- **`workerStatus` sin TTL** (la tabla `detections` sí): 10 filas con `status: running` de workers muertos hace semanas; la consola puede mostrar "en marcha" falsamente. Debe expirar o comparar `lastSeen`.
+- **Datos**: `detections` tiene 2.620 filas, 2.427 sin `owner_uid` (histórico anterior al GSI); ruido en las consultas/limpieza.
+
+### Eficacia (banco de 10 escenas, ciclo 3)
+
+- Negativos limpios 6/6; positivos 1/4. Solo 2 verdaderos positivos verificados en todo el historial. El banco es pequeño (n=10) y no permite afirmar una precisión/recall: **no hay cifra defendible para un cliente**.
+- Techo conocido: juicio por fotograma suelto; caídas por pose (YOLOv8-Pose) y contexto temporal siguen pendientes.
+
+### Economía (el bloqueador principal)
+
+Plan `cam5` = **50 USD/mes por 5 cámaras**; coste medido Fase B 5 cámaras = **115,62 USD/mes** (ciclo 3). Margen negativo (~ -65 USD/cliente) antes de SMS, soporte y pasarela. `cam1` cuesta 1 USD (plan de prueba). Cada cliente nuevo hoy pierde dinero con la arquitectura actual.
+
+### Riesgos técnicos para muchos clientes
+
+1. `_ultimo_vlm` (throttle) y cooldowns viven en memoria del proceso: se pierden al reiniciar; con varias cajas de análisis no se comparten.
+2. Una única caja de análisis compartida CLIP+VLM: sin autoescalado, sin límite de concurrencia por cliente, sin cuota por cliente en gasto VLM (un cliente ruidoso encarece a todos).
+3. Sin límites de cuenta verificados (cuota de vCPU EC2, cuota de Bedrock Nova Lite por minuto): `claude-code-infra` no tiene permiso `servicequotas:*`; pedir a un admin que las revise antes de un lanzamiento.
+4. Modo por-cámara: una instancia dedicada por cámara (~86 USD/mes) no escala económicamente.
+5. Sin pruebas automatizadas de las Lambdas ni CI; despliegue manual con zip.
+6. Sin métrica de falsos positivos por cliente ni feedback de usuario (botón "falsa alarma") para medir precisión en producción.
+
+### Propuestas priorizadas
+
+1. **Precio/coste (antes de captar)**: subir cam5 a ≥150 USD o limitar cámaras por plan; medir coste real con cámaras sin actividad (la puerta de personas y MOG2 lo bajan en locales cerrados). Añadir tope mensual de llamadas VLM por cliente.
+2. **Observabilidad mínima**: alarmas en DLQs > 0, errores de Lambda, instancia analysis caída, gasto Bedrock diario; TTL o `lastSeen` en `workerStatus`.
+3. **Precisión medible**: ampliar banco a ≥50 escenas con positivos grabados a propósito; botón de falsa alarma en la consola que alimente un dataset; publicar precisión/recall reales.
+4. **Ciclo 4 ya planificado**: YOLOv8-Pose para caídas, calibrar `clear_margin` de persona (baja llamadas VLM), throttle compartido en DynamoDB/Redis.
+5. **Piloto acotado** (3-5 clientes con lista de espera) en vez de captación masiva hasta cerrar 1 y 2.
+
+### Nota para el agente de captación de clientes
+
+Contexto compartido (no hay canal directo: no había otra sesión alcanzable): el producto aún no puede prometer cifras de precisión ni sostener margen positivo. Sugerencia: posicionar como **piloto/beta** para negocios con cámaras ya instaladas (locales cerrados de noche: almacén, tienda, oficina), donde el coste es menor y la puerta de personas más rentable; recoger de esos pilotos los clips etiquetados que hoy faltan. Cualquier oferta de precio debe validarse contra la sección de Economía.
