@@ -1,0 +1,61 @@
+# Nivel 1 del CI del benchmark de Heimdall: chequeo rápido, sin videos
+# reales ni credenciales AWS. Corre en cada push/PR que toque el pipeline
+# (cascade/ o benchmark/) y falla en minutos si algo rompe la cadena de
+# imports o el cálculo de métricas -- no reemplaza la Suite Manual
+# (benchmark/correr_suite.py --vlm), que sigue siendo manual porque necesita
+# los 15 videos reales (no viven en el repo, pesan ~1.6GB) y Mímir real.
+#
+# El Nivel 2 (suite completa + Mímir real, en PR contra main) queda para
+# cuando exista el bucket S3 con los videos y el rol OIDC hacia AWS -- no
+# está en este archivo todavía.
+name: Benchmark rápido (Capa 0+1)
+
+"on":
+  push:
+    paths:
+      - "cascade/**"
+      - "benchmark/**"
+      - ".github/workflows/benchmark-quick.yml"
+  pull_request:
+    paths:
+      - "cascade/**"
+      - "benchmark/**"
+      - ".github/workflows/benchmark-quick.yml"
+
+jobs:
+  smoke-test:
+    name: Selftest de métricas + pipeline completo (video sintético)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - name: Descargar el repo
+        uses: actions/checkout@v4
+
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cachear paquetes de pip (torch pesa, no reinstalarlo cada vez)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-benchmark-${{ runner.os }}-${{ hashFiles('.github/workflows/benchmark-quick.yml') }}
+
+      - name: Cachear los pesos de CLIP (ViT-B/32, ~340MB, no cambian)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/clip
+          key: clip-vit-b32
+
+      - name: Instalar dependencias (build CPU -- el runner no tiene GPU)
+        run: |
+          pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+          pip install opencv-python-headless pillow ftfy regex tqdm scikit-learn boto3 numpy
+          pip install git+https://github.com/openai/CLIP.git
+
+      - name: Smoke test (selftest de métricas + pipeline con video sintético)
+        working-directory: benchmark
+        run: python ci_smoke_test.py
